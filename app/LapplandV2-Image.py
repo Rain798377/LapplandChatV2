@@ -3,6 +3,7 @@ import discord
 import io
 import requests
 from groq import Groq
+
 # ── Config ──────────────────────────────────────────────────────────────────
 DISCORD_TOKEN    = os.environ.get("DISCORD_TOKEN")
 GROQ_API_KEY     = os.environ.get("GROQ_API_KEY")
@@ -12,11 +13,7 @@ REPLY_TO_ALL     = True
 ALLOWED_CHANNELS = [1483716134250217572]
 # ────────────────────────────────────────────────────────────────────────────
 
-SYSTEM_PROMPT = f"""you are {BOT_NAME}. you're in a discord server. be normal. short replies unless the question needs detail. no asterisks. don't mention being an AI. different people talk in the same channel - pay attention to who said what and treat each person's messages in context of what THEY said, not the whole conversation. Do not be so formal, talk casually. You may use short terms such as lmao, lol, bruh, etc. Make sure it fits the tone of the conversation.
-
-IMPORTANT: you have the ability to generate images. If someone asks you to generate, draw, make, or create an image, you MUST respond with ONLY this exact format and nothing else:
-[IMAGE: detailed image prompt here]
-do NOT make up URLs. do NOT say you generated something. do NOT ask clarifying questions. ONLY output the [IMAGE: detailed image prompt here] tag."""
+SYSTEM_PROMPT = f"""you are {BOT_NAME}. you're in a discord server. be normal. short replies unless the question needs detail. no asterisks. don't mention being an AI. different people talk in the same channel - pay attention to who said what and treat each person's messages in context of what THEY said, not the whole conversation. Do not be so formal, talk casually. You may use short terms such as lmao, lol, bruh, etc. Make sure it fits the tone of the conversation."""
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 histories   = {}
@@ -38,7 +35,7 @@ def generate_image(prompt: str) -> bytes:
     return response.content
 
 
-def get_ai_response(channel_id: int, user_message: str, username: str) -> str:
+def get_ai_response(channel_id: int, user_message: str, username: str) -> tuple:
     if channel_id not in histories:
         histories[channel_id] = []
 
@@ -47,25 +44,44 @@ def get_ai_response(channel_id: int, user_message: str, username: str) -> str:
         histories[channel_id] = histories[channel_id][-MAX_HISTORY:]
 
     response = groq_client.chat.completions.create(
-        # model="llama-3.1-8b-instant", # faster but less accurate
-        model="llama-3.3-70b-versatile", # slower but more accurate, especially for image prompts
+        model="llama-3.3-70b-versatile",
         messages=[{"role": "system", "content": SYSTEM_PROMPT}] + histories[channel_id],
         max_tokens=300,
         temperature=0.9,
     )
 
     reply = response.choices[0].message.content.strip()
-    print(f"DEBUG reply: {repr(reply)}")  # debug line
+    print(f"DEBUG reply: {repr(reply)}")
     histories[channel_id].append({"role": "assistant", "content": reply})
-
-    # check if llama wants to generate an image
-    if "[IMAGE:" in reply and "]" in reply:
-        start = reply.index("[IMAGE:") + 7
-        end = reply.index("]", start)
-        prompt = reply[start:end].strip()
-        return ("image", prompt)
-    
     return ("text", reply)
+
+
+def is_image_request(message: str) -> bool:
+    keywords = ["draw", "generate", "create", "make", "paint", "sketch", "render", "!draw"]
+    image_words = ["image", "picture", "pic", "photo", "art", "illustration"]
+    msg = message.lower()
+    # !draw shortcut
+    if msg.startswith("!draw "):
+        return True
+    # keyword combo check
+    return any(k in msg for k in keywords) and any(i in msg for i in image_words)
+
+
+def extract_image_prompt(message: str) -> str:
+    # for !draw just take everything after the command
+    if message.lower().startswith("!draw "):
+        return message[6:].strip()
+    # otherwise ask llama to extract a clean image prompt
+    response = groq_client.chat.completions.create(
+        model="llama-3.1-8b-instant",
+        messages=[
+            {"role": "system", "content": "Extract a clean, detailed image generation prompt from the user's message. Return ONLY the prompt, nothing else. No preamble, no explanation."},
+            {"role": "user", "content": message}
+        ],
+        max_tokens=100,
+        temperature=0.7,
+    )
+    return response.choices[0].message.content.strip()
 
 
 @bot.event
@@ -99,13 +115,13 @@ async def on_message(message: discord.Message):
 
     async with message.channel.typing():
         try:
-            result = get_ai_response(message.channel.id, content, message.author.display_name)
-
-            # Handles both image and text responses
-            if result[0] == "image":
-                image_bytes = generate_image(result[1])
+            if is_image_request(content):
+                prompt = extract_image_prompt(content)
+                print(f"DEBUG image prompt: {repr(prompt)}")
+                image_bytes = generate_image(prompt)
                 await message.reply(file=discord.File(io.BytesIO(image_bytes), filename="image.png"), mention_author=False)
             else:
+                result = get_ai_response(message.channel.id, content, message.author.display_name)
                 await message.reply(result[1], mention_author=False)
         except Exception as e:
             print(f"error: {e}")
