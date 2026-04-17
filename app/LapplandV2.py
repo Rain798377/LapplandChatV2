@@ -1,16 +1,15 @@
 import os
 import discord
 from groq import Groq
-from secret import DISCORD, GROQ
 from dotenv import dotenv_values
 config = dotenv_values(".env")
 
 # ── Config ──────────────────────────────────────────────────────────────────
-DISCORD_TOKEN = config.get("DISCORD_TOKEN", DISCORD)  # fallback to hardcoded if .env not used
-GROQ_API_KEY  = config.get("GROQ_API_KEY", GROQ)        # fallback to hardcoded if .env not used
+DISCORD_TOKEN = config.get("DISCORD_TOKEN")
+GROQ_API_KEY  = config.get("GROQ_API_KEY")
 BOT_NAME      = "Lappland"          # change to whatever you want
 REPLY_TO_ALL  = True           # True = responds to every message in allowed channels
-ALLOWED_CHANNELS = []          # list of channel IDs to respond in, e.g. [123456, 789012]
+ALLOWED_CHANNELS = [1483716134250217572]          # list of channel IDs to respond in, e.g. [123456, 789012]
                                # leave empty [] to respond in ALL channels
 # ────────────────────────────────────────────────────────────────────────────
 
