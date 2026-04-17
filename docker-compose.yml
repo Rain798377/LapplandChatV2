@@ -1,8 +1,10 @@
 services:
   discord-bot:
     build: .
-    env_file: 
-      - .env
+    environment:
+      - GROQ_API_KEY: ReplaceWithYourGroqKey
+      - DISCORD_TOKEN: ReplaceWithYourToken
+    container_name: lappland
     restart: unless-stopped
     volumes:
       - ./app:/app
