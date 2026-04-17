@@ -54,11 +54,14 @@ def get_ai_response(channel_id: int, user_message: str, username: str) -> str:
     )
 
     reply = response.choices[0].message.content.strip()
+    print(f"DEBUG reply: {repr(reply)}")  # debug line
     histories[channel_id].append({"role": "assistant", "content": reply})
 
     # check if llama wants to generate an image
-    if reply.startswith("[IMAGE:") and reply.endswith("]"):
-        prompt = reply[7:-1].strip()
+    if "[IMAGE:" in reply and "]" in reply:
+        start = reply.index("[IMAGE:") + 7
+        end = reply.index("]", start)
+        prompt = reply[start:end].strip()
         return ("image", prompt)
     
     return ("text", reply)
