@@ -46,7 +46,7 @@ def get_ai_response(channel_id: int, user_message: str, username: str) -> str:
         histories[channel_id] = histories[channel_id][-MAX_HISTORY:]
 
     response = groq_client.chat.completions.create(
-        model="llama3-70b-8192",
+        model="llama-3.1-8b-instant",
         messages=[{"role": "system", "content": SYSTEM_PROMPT}] + histories[channel_id],
         max_tokens=300,
         temperature=0.9,
