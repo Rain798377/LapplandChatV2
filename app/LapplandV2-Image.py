@@ -116,10 +116,16 @@ async def on_message(message: discord.Message):
     async with message.channel.typing():
         try:
             if is_image_request(content):
-                prompt = extract_image_prompt(content)
-                print(f"DEBUG image prompt: {repr(prompt)}")
-                image_bytes = generate_image(prompt)
-                await message.reply(file=discord.File(io.BytesIO(image_bytes), filename="image.png"), mention_author=False)
+                try:
+                    prompt = extract_image_prompt(content)
+                    print(f"DEBUG image prompt: {repr(prompt)}")
+                    image_bytes = generate_image(prompt)
+                    await message.reply(file=discord.File(io.BytesIO(image_bytes), filename="image.png"), mention_author=False)
+                except Exception as img_error:
+                    print(f"image generation failed: {img_error}")
+                    import traceback
+                    traceback.print_exc()
+                    # silent fail — no reply sent
             else:
                 result = get_ai_response(message.channel.id, content, message.author.display_name)
                 await message.reply(result[1], mention_author=False)
