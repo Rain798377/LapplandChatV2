@@ -4,6 +4,7 @@ services:
     environment:
       - GROQ_API_KEY: ReplaceWithYourGroqKey
       - DISCORD_TOKEN: ReplaceWithYourToken
+      - HF_TOKEN: ReplaceWithYourHuggingFaceToken
     container_name: lappland
     restart: unless-stopped
     volumes:
