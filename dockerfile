@@ -1,5 +1,5 @@
 FROM python:3.11-slim
 WORKDIR /app
 COPY . .
-RUN pip install discord.py groq python-dotenv base64 httpx
-CMD ["python", "LapplandV2-Image.py"]
+RUN pip install discord.py groq
+CMD ["python", "LapplandV2.py"]
