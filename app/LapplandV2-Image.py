@@ -31,13 +31,15 @@ class Bot(discord.Client):
         self.tree = app_commands.CommandTree(self)
 
     async def setup_hook(self):
-        await self.tree.sync()  # syncs slash commands globally on startup
+        await self.tree.sync()
+        print("slash commands synced", flush=True)
 
 bot = Bot()
 
 
 # ── Image generation ──────────────────────────────────────────────────────────
 async def generate_image(prompt: str) -> bytes | None:
+    print(f"[img-gen] prompt: {prompt}", flush=True)
     async with httpx.AsyncClient(timeout=60) as client:
         response = await client.post(
             "https://fal.run/fal-ai/flux/schnell",
@@ -48,10 +50,12 @@ async def generate_image(prompt: str) -> bytes | None:
             json={"prompt": prompt, "image_size": "square_hd", "num_images": 1}
         )
         data = response.json()
+        print(f"[img-gen] fal response: {data}", flush=True)
         if not data.get("images"):
             return None
         image_url = data["images"][0]["url"]
         img_response = await client.get(image_url)
+        print(f"[img-gen] downloaded {len(img_response.content)} bytes", flush=True)
         return img_response.content
 
 
@@ -59,7 +63,7 @@ async def generate_image(prompt: str) -> bytes | None:
 @bot.tree.command(name="imagine", description="Generate an image")
 @app_commands.describe(prompt="What do you want to generate?")
 async def imagine(interaction: discord.Interaction, prompt: str):
-    await interaction.response.defer()  # gives us time to generate
+    await interaction.response.defer()
     image_bytes = await generate_image(prompt)
     if image_bytes:
         await interaction.followup.send(
@@ -75,12 +79,13 @@ async def get_ai_response(channel_id: int, user_message: str, username: str, ima
     if channel_id not in histories:
         histories[channel_id] = []
 
-    # vision path — swap model and send image inline, skip history
     if image_url:
+        print(f"[vision] fetching image: {image_url}", flush=True)
         async with httpx.AsyncClient() as client:
             img_response = await client.get(image_url)
             img_b64 = base64.b64encode(img_response.content).decode("utf-8")
             content_type = img_response.headers.get("content-type", "image/png").split(";")[0]
+        print(f"[vision] got image, content-type: {content_type}, size: {len(img_response.content)} bytes", flush=True)
 
         response = groq_client.chat.completions.create(
             model="meta-llama/llama-4-scout-17b-16e-instruct",
@@ -93,7 +98,9 @@ async def get_ai_response(channel_id: int, user_message: str, username: str, ima
             ],
             max_tokens=300,
         )
-        return response.choices[0].message.content.strip()
+        reply = response.choices[0].message.content.strip()
+        print(f"[vision] reply: {reply}", flush=True)
+        return reply
 
     # normal text path
     histories[channel_id].append({"role": "user", "content": f"{username}: {user_message}"})
@@ -114,7 +121,7 @@ async def get_ai_response(channel_id: int, user_message: str, username: str, ima
 # ── Events ────────────────────────────────────────────────────────────────────
 @bot.event
 async def on_ready():
-    print(f"logged in as {bot.user} ✓")
+    print(f"logged in as {bot.user} ✓", flush=True)
 
 
 @bot.event
@@ -138,12 +145,35 @@ async def on_message(message: discord.Message):
         content = content.replace(f"<@{mention.id}>", "").replace(f"<@!{mention.id}>", "")
     content = content.strip()
 
-    # check for image attachment
+    print(f"[msg] author={message.author.display_name} content={repr(content)}", flush=True)
+    print(f"[msg] attachments={message.attachments}", flush=True)
+    print(f"[msg] embeds={message.embeds}", flush=True)
+
+    # check attachments first
     image_url = None
     if message.attachments:
+        for a in message.attachments:
+            print(f"[msg] attachment: url={a.url} content_type={a.content_type}", flush=True)
         image_attachments = [a for a in message.attachments if a.content_type and a.content_type.startswith("image/")]
         if image_attachments:
             image_url = image_attachments[0].url
+            print(f"[msg] using attachment image: {image_url}", flush=True)
+
+    # fallback: check embeds
+    if not image_url and message.embeds:
+        for embed in message.embeds:
+            print(f"[msg] embed type={embed.type} image={embed.image} thumbnail={embed.thumbnail}", flush=True)
+            if embed.image and embed.image.url:
+                image_url = embed.image.url
+                print(f"[msg] using embed image: {image_url}", flush=True)
+                break
+            if embed.thumbnail and embed.thumbnail.url:
+                image_url = embed.thumbnail.url
+                print(f"[msg] using embed thumbnail: {image_url}", flush=True)
+                break
+
+    if not image_url:
+        print("[msg] no image found", flush=True)
 
     if not content and not image_url:
         return
@@ -153,7 +183,7 @@ async def on_message(message: discord.Message):
             reply = await get_ai_response(message.channel.id, content, message.author.display_name, image_url)
             await message.reply(reply, mention_author=False)
         except Exception as e:
-            print(f"error: {e}")
+            print(f"[error] {e}", flush=True)
             await message.reply("lol something broke on my end, try again")
 
 bot.run(DISCORD_TOKEN)
