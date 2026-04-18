@@ -11,7 +11,7 @@ BOT_NAME         = "Lappland"
 REPLY_TO_ALL     = True
 ALLOWED_CHANNELS = [1483716134250217572]
 MIN_CHARS        = 5
-REPLY_CHANCE     = 0.4
+REPLY_CHANCE     = random.uniform(0.8, 0.9)  # high chance to reply cause boring without interactions, but not 100% to keep it a bit unpredictable and less bot-like
 MEMORY_FILE      = "data/memory.json"
 # ─────────────────────────────────────────────────────────────────────────────
 
