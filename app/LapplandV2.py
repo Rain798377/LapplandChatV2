@@ -40,7 +40,8 @@ bot = discord.Client(intents=intents)
 GREETINGS = {"hello", "hi", "hey", "sup", "yo", "hiya", "heya", "howdy", "morning", "evening", "wsp"}
 
 def is_greeting(text: str) -> bool:
-    return text.lower().strip("!?,. ") in GREETINGS
+    words = text.lower().split()
+    return any(word.strip("!?,. ") in GREETINGS for word in words)
 
 
 # ── Memory ────────────────────────────────────────────────────────────────────
