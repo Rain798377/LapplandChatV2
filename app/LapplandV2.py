@@ -37,6 +37,11 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = discord.Client(intents=intents)
 
+GREETINGS = {"hello", "hi", "hey", "sup", "yo", "hiya", "heya", "howdy", "morning", "evening", "wsp"}
+
+def is_greeting(text: str) -> bool:
+    return text.lower().strip("!?,. ") in GREETINGS
+
 
 # ── Memory ────────────────────────────────────────────────────────────────────
 def load_memory() -> dict:
@@ -167,11 +172,10 @@ async def on_message(message: discord.Message):
     maybe_shift_mood()
     memory = load_memory()
 
-    if not (mentioned or replied_to):
+    if not (mentioned or replied_to or is_greeting(content)):
         if not REPLY_TO_ALL:
             return
         if random.random() > REPLY_CHANCE:
-            # silently track context without responding
             add_to_history(message.channel.id, message.author.display_name, content)
             update_memory_from_conversation(message.channel.id, message.author.display_name, memory)
             return
