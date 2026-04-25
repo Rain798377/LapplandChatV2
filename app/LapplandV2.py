@@ -331,7 +331,6 @@ async def download_spotify_track(interaction: discord.Interaction, url: str):
 
     try:
         async with aiohttp.ClientSession() as session:
-            # Try with US country code first
             async with session.get(
                 f"https://api.song.link/v1-alpha.1/links?url={url}&userCountry=US"
             ) as resp:
@@ -339,7 +338,6 @@ async def download_spotify_track(interaction: discord.Interaction, url: str):
 
             entities = list(data.get("entitiesByUniqueId", {}).values())
 
-            # Retry without country restriction if no results
             if not entities:
                 async with session.get(
                     f"https://api.song.link/v1-alpha.1/links?url={url}"
@@ -348,15 +346,16 @@ async def download_spotify_track(interaction: discord.Interaction, url: str):
                 entities = list(data.get("entitiesByUniqueId", {}).values())
 
         if not entities:
-            # Last resort: extract track ID and search Spotify open graph for title
-            await status.edit(content="song.link failed, trying to fetch title from Spotify page...")
+            await status.edit(content="song.link failed, trying Spotify page...")
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, headers={"User-Agent": "Mozilla/5.0"}) as resp:
                     html = await resp.text()
             og_title = re.search(r'<meta property="og:title" content="([^"]+)"', html)
             og_desc = re.search(r'<meta name="description" content="([^"]+)"', html)
             if og_title:
-                track_name = og_title.group(1).split(" - ")[0].strip()
+                raw = og_title.group(1)
+                raw = re.sub(r"(?i)listen to (.+) on spotify", r"\1", raw).strip()
+                track_name = raw.split(" - ")[0].strip()
                 artist = og_desc.group(1).split(" · ")[0].strip() if og_desc else ""
             else:
                 await status.edit(content="Couldn't fetch track info from any source.")
