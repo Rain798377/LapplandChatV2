@@ -328,13 +328,28 @@ async def download_spotify_track(interaction: discord.Interaction, url: str):
     await interaction.followup.send("Detected Spotify link, fetching track info...", wait=True)
 
     try:
-        # Extract track ID from URL
+        # Extract track ID from Spotify URL
         track_id = url.split("/track/")[-1].split("?")[0]
-        track = sp.track(track_id)
-        track_name = track["name"]
-        artist = track["artists"][0]["name"]
+
+        # Use iTunes API to search - free, no auth needed
+        # First we need the track name from the URL itself via a web scrape fallback
+        # So instead, just pass the Spotify URL to odesli/song.link API
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"https://api.song.link/v1-alpha.1/links?url={url}&userCountry=US"
+            ) as resp:
+                data = await resp.json()
+
+        # Extract title from song.link metadata
+        entity = list(data.get("entitiesByUniqueId", {}).values())[0]
+        track_name = entity.get("title")
+        artist = entity.get("artistName")
+
+        if not track_name:
+            raise ValueError("No track info found")
+
     except Exception as e:
-        await interaction.followup.send(f"Couldn't fetch Spotify metadata: `{e}`")
+        await interaction.followup.send(f"Couldn't fetch track info: `{e}`")
         return
 
     search_query = f"ytsearch1:{artist} {track_name}"
