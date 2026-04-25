@@ -525,8 +525,7 @@ async def spotify_queue(interaction: discord.Interaction, query: str):
     else:
         await interaction.response.send_message("Couldn't add to queue — make sure spotify is open and playing something, and you've linked your account (`/spotify link`)", ephemeral=True)
 
-@tree.command(name="download-spotify", description="Download music from Spotify links")
-@app_commands.describe(link="Spotify link to download", format="Output format")
+@tree.command(name="spotify_download", description="Download music from Spotify links")
 async def spotify_download(interaction: discord.Interaction, link: str, format: str = "mp3"):
     """
     Download music from a Spotify link.
@@ -560,7 +559,11 @@ async def spotify_download(interaction: discord.Interaction, link: str, format: 
         stdout, stderr = await process.communicate()
         
         if process.returncode != 0:
-            await interaction.followup.send(f"Error downloading music: {stderr.decode()}")
+            error_message = stderr.decode()
+            # Truncate error message if too long
+            if len(error_message) > 1900:
+                error_message = error_message[:1900] + "..."
+            await interaction.followup.send(f"Error downloading music: {error_message}")
             return
         
         # Find the downloaded file(s)
@@ -570,8 +573,8 @@ async def spotify_download(interaction: discord.Interaction, link: str, format: 
             await interaction.followup.send("No files were downloaded. The track might not be available.")
             return
         
-        # Send the downloaded file(s) to the user
-        await interaction.followup.send(f"Successfully downloaded {len(files)} file(s):")
+        # Send initial message
+        await interaction.followup.send(f"Successfully downloaded {len(files)} file(s). Sending them now...")
         
         # Note: Discord has a file size limit of 8MB for regular bots
         for file in files:
@@ -579,15 +582,29 @@ async def spotify_download(interaction: discord.Interaction, link: str, format: 
             file_size = os.path.getsize(file_path)
             
             if file_size <= 8 * 1024 * 1024:  # 8MB in bytes
-                await interaction.followup.send(file=File(file_path))
+                try:
+                    await interaction.followup.send(file=File(file_path))
+                except discord.errors.HTTPException as e:
+                    if "Must be 2000 or fewer in length" in str(e):
+                        # If file name is too long, send with a shorter name
+                        await interaction.followup.send(file=File(file_path, filename=f"download.{format}"))
+                    else:
+                        raise e
             else:
+                # For large files, just inform the user
+                size_mb = file_size / (1024 * 1024)
                 await interaction.followup.send(
-                    f"File \"{file}\" is too large to send directly ({file_size / (1024 * 1024):.2f}MB). "
+                    f"File \"{file}\" is too large to send directly ({size_mb:.2f}MB). "
                     f"Please download it from the server directly."
                 )
                 
     except Exception as e:
-        await interaction.followup.send(f"An error occurred: {str(e)}")
+        error_message = str(e)
+        # Truncate error message if too long
+        if len(error_message) > 1900:
+            error_message = error_message[:1900] + "..."
+        await interaction.followup.send(f"An error occurred: {error_message}")
+
 
 
 
