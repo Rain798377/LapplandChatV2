@@ -192,6 +192,8 @@ def add_to_history(channel_id: int, username: str, content: str):
 
 # ── Slash Commands ──────────────────────────────────────────────────────────────
 @tree.command(name="download", description="Download media from a URL")
+@app_commands.allowed_installs(guilds=True, users=True)
+@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 @app_commands.describe(
     url="The link to download from",
     quality="Video quality (default: auto picks 720p or 480p based on file size)",
