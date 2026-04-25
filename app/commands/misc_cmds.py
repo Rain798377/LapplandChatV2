@@ -99,7 +99,7 @@ def setup(tree: app_commands.CommandTree, bot):
                 content = await resp.text()
         await interaction.response.send_message(rf"Content from {url}:\n```{content}```")
 
-    @tree.command(name="IP", description="Get the bot's public IP address (admin only)")
+    @tree.command(name="ip", description="Get the bot's public IP address (admin only)")
     @app_commands.allowed_installs(guilds=True, users=True)
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def get_ip(interaction: discord.Interaction):
