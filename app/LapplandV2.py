@@ -10,7 +10,6 @@ import tempfile
 import glob
 import secrets
 import requests
-import spotify
 import shutil
 import subprocess
 import asyncio
@@ -510,138 +509,9 @@ async def ship_users(interaction: discord.Interaction, user1: discord.User, user
     compatibility = secrets.randbelow(101)  # 0 to 100
     await interaction.response.send_message(f"❤️ {user1.display_name} + {user2.display_name} = {compatibility}% compatible! ❤️")
 
-spotify_group = app_commands.Group(name="spotify", description="Spotify commands")
-
-@spotify_group.command(name="link", description="Link your Spotify account")
-async def spotify_link(interaction: discord.Interaction):
-    user_id = str(interaction.user.id)
-    scope = "user-read-currently-playing user-read-recently-played user-modify-playback-state"
-    url = (
-        f"https://accounts.spotify.com/authorize"
-        f"?client_id={SPOTIFY_CLIENT_ID}"
-        f"&response_type=code"
-        f"&redirect_uri={SPOTIFY_REDIRECT_URI}"
-        f"&scope={requests.utils.quote(scope)}"
-        f"&state={user_id}"  # pass discord user ID through so callback knows who it is
-    )
-    await interaction.response.send_message(
-        f"Click here to link your spotify: {url}", ephemeral=True
-    )
-
-@spotify_group.command(name="now", description="See what you're currently listening to")
-async def spotify_now(interaction: discord.Interaction):
-    user_id = str(interaction.user.id)
-    track = spotify.get_now_playing(user_id)
-    if not track:
-        await interaction.response.send_message("Nothing playing, or you haven't linked your account yet (`/spotify link`)", ephemeral=False)
-        return
-    status = "playing" if track["playing"] else "paused"
-    await interaction.response.send_message(
-        f"🎵 **{track['name']}** by {track['artist']} ({status})\n{track['url']}"
-    )
-
-@spotify_group.command(name="recent", description="See your recently played tracks")
-async def spotify_recent(interaction: discord.Interaction):
-    user_id = str(interaction.user.id)
-    tracks = spotify.get_recent_tracks(user_id)
-    if not tracks:
-        await interaction.response.send_message("Nothing recent, or you haven't linked yet (`/spotify link`)", ephemeral=True)
-        return
-    lines = [f"{i+1}. **{t['name']}** by {t['artist']} — {t['url']}" for i, t in enumerate(tracks)]
-    await interaction.response.send_message("\n".join(lines), ephemeral=True)
-
-@spotify_group.command(name="search", description="Search for a track on Spotify")
-@app_commands.describe(query="Track name or artist to search for")
-async def spotify_search(interaction: discord.Interaction, query: str):
-    track = spotify.search_track(query)
-    if not track:
-        await interaction.response.send_message("Couldn't find that", ephemeral=True)
-        return
-    await interaction.response.send_message(f"🎵 **{track['name']}** by {track['artist']}\n{track['url']}")
-
-@spotify_group.command(name="queue", description="Add a track to your Spotify queue")
-@app_commands.describe(query="Track name to search and queue")
-async def spotify_queue(interaction: discord.Interaction, query: str):
-    user_id = str(interaction.user.id)
-    track = spotify.search_track(query)
-    if not track:
-        await interaction.response.send_message("Couldn't find that track", ephemeral=True)
-        return
-    success = spotify.add_to_queue(user_id, track["uri"])
-    if success:
-        await interaction.response.send_message(f"Added **{track['name']}** by {track['artist']} to your queue")
-    else:
-        await interaction.response.send_message("Couldn't add to queue — make sure spotify is open and playing something, and you've linked your account (`/spotify link`)", ephemeral=True)
-
-VALID_FORMATS = {"mp3", "ogg", "flac"}
-
-@tree.command(name="spoti_download", description="Download music from Spotify links")
-async def spotify_download(interaction: discord.Interaction, link: str, format: str = "mp3"):
-    await interaction.response.defer()
-
-    if format not in VALID_FORMATS:
-        await interaction.followup.send(f"Invalid format. Choose from: {', '.join(VALID_FORMATS)}")
-        return
-
-    spotify_regex = r"https?://open\.spotify\.com/(track|album|playlist)/[a-zA-Z0-9]+"
-    if not re.match(spotify_regex, link):
-        await interaction.followup.send("Invalid Spotify link.")
-        return
-
-    download_dir = f"/tmp/spotdl_{interaction.id}"
-    os.makedirs(download_dir, exist_ok=True)
-
-    try:
-        process = await asyncio.create_subprocess_exec(
-            "spotdl", "--format", format, "--output", download_dir, link,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-
-        try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=120)
-        except asyncio.TimeoutError:
-            process.kill()
-            await interaction.followup.send("Download timed out after 2 minutes.")
-            return
-
-        stdout_msg = stdout.decode().strip()
-        stderr_msg = stderr.decode().strip()
-        print(f"[spotdl] code: {process.returncode}\nstdout: {stdout_msg}\nstderr: {stderr_msg}")
-
-        if process.returncode != 0:
-            error_message = stderr_msg or stdout_msg or "Unknown error"
-            await interaction.followup.send(f"Error:\n```{error_message[:1900]}```")
-            return
-
-        files = [f for f in os.listdir(download_dir) if f.endswith(f".{format}")]
-
-        if not files:
-            await interaction.followup.send(f"No files downloaded. spotdl output:\n```{stdout_msg[:1900]}```")
-            return
-
-        for file in files:
-            file_path = os.path.join(download_dir, file)
-            size_mb = os.path.getsize(file_path) / (1024 * 1024)
-
-            if size_mb <= 8:
-                await interaction.followup.send(file=discord.File(file_path))
-            else:
-                await interaction.followup.send(f"**{file}** is too large ({size_mb:.2f} MB).")
-
-    except Exception as e:
-        await interaction.followup.send(f"An error occurred: {str(e)[:1900]}")
-
-    finally:
-        if os.path.exists(download_dir):
-            shutil.rmtree(download_dir)
-
-
-
 # ── register commands ────────────────────────────────────────────────────────────
 tree.add_command(memory_group)
 tree.add_command(random_group)
-tree.add_command(spotify_group)
 
 # ── Events ────────────────────────────────────────────────────────────────────
 @bot.event
