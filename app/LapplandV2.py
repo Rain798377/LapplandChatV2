@@ -327,7 +327,6 @@ async def download_media(interaction: discord.Interaction, url: str, quality: st
 
 async def download_spotify_track(interaction: discord.Interaction, url: str):
     await interaction.followup.send("Detected Spotify link, fetching track info...", wait=True)
-
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
@@ -339,6 +338,12 @@ async def download_spotify_track(interaction: discord.Interaction, url: str):
         track_name = entity.get("title")
         artist = entity.get("artistName")
 
+        # Extract exact YouTube URL from song.link
+        links_by_platform = data.get("linksByPlatform", {})
+        yt_music = links_by_platform.get("youtubeMusic", {})
+        youtube = links_by_platform.get("youtube", {})
+        yt_url = yt_music.get("url") or youtube.get("url") or None
+
         if not track_name:
             raise ValueError("No track info found")
 
@@ -346,11 +351,17 @@ async def download_spotify_track(interaction: discord.Interaction, url: str):
         await interaction.followup.send(f"Couldn't fetch track info: `{e}`")
         return
 
-    # Build search queries: exact first, then progressively simpler fallbacks
     clean_artist = artist.split(",")[0].split("&")[0].strip()
     clean_title = re.sub(r"[\(\[].*?[\)\]]", "", track_name).strip()
 
-    search_attempts = [
+    search_attempts = []
+
+    # Exact YouTube match first if song.link has it
+    if yt_url:
+        search_attempts.append((yt_url, f"**{artist} - {track_name}** (exact match)"))
+
+    # Fallback searches
+    search_attempts += [
         (f"ytsearch1:{artist} {track_name}", f"**{artist} - {track_name}**"),
         (f"ytsearch1:{clean_artist} {clean_title}", f"**{clean_artist} - {clean_title}** (simplified)"),
         (f"ytsearch1:{clean_title}", f"**{clean_title}** (title only)"),
@@ -358,7 +369,6 @@ async def download_spotify_track(interaction: discord.Interaction, url: str):
 
     for search_query, label in search_attempts:
         await interaction.followup.send(f"Searching YouTube for: {label}...", wait=True)
-
         with tempfile.TemporaryDirectory() as tmpdir:
             try:
                 ydl_opts = {
@@ -374,34 +384,26 @@ async def download_spotify_track(interaction: discord.Interaction, url: str):
                         "preferredquality": "192",
                     }],
                 }
-
                 loop = asyncio.get_event_loop()
                 await loop.run_in_executor(None, lambda: _run_ydl(ydl_opts, search_query))
-
                 files = glob.glob(os.path.join(tmpdir, "*.mp3"))
                 if not files:
-                    continue  # try next search query
-
+                    continue
                 filepath = files[0]
                 size_mb = os.path.getsize(filepath) / (1024 * 1024)
-
                 if size_mb > MAX_FILE_SIZE_MB:
                     await interaction.followup.send(f"Track is {size_mb:.1f}MB, too big to upload.")
                     return
-
                 dest = os.path.join(tempfile.gettempdir(), os.path.basename(filepath))
                 shutil.copy2(filepath, dest)
                 await interaction.followup.send(file=discord.File(dest, os.path.basename(dest)))
-
                 try:
                     os.remove(dest)
                 except Exception:
                     pass
-
-                return  # success, stop trying
-
+                return
             except Exception:
-                continue  # try next search query
+                continue
 
     await interaction.followup.send("Couldn't find the track on YouTube after multiple attempts.")
     
