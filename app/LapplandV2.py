@@ -17,6 +17,7 @@ import asyncio
 import re
 import io
 import spotipy
+import aiohttp
 from spotipy.oauth2 import SpotifyClientCredentials
 
 # ── Config ───────────────────────────────────────────────────────────────────
