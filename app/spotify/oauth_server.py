@@ -39,7 +39,7 @@ def callback():
     })
 
     if response.status_code != 200:
-        return "failed to get token", 400
+        return "Failed to get token", 400
 
     data = response.json()
     tokens = load_tokens()
@@ -49,7 +49,7 @@ def callback():
         "expires_in":    data["expires_in"],
     }
     save_tokens(tokens)
-    return "linked! you can close this tab and go back to discord ✓"
+    return "Linked! You can close this tab and go back to discord ✓"
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
