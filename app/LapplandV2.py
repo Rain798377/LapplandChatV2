@@ -1,7 +1,11 @@
 import random
 import discord
 import ai
+import sys
+import os
 from discord import app_commands
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from config import (DISCORD_TOKEN, ALLOWED_CHANNELS, MIN_CHARS, REPLY_TO_ALL, REPLY_CHANCE, GREETINGS)
 from memory import load_memory, update_memory_from_conversation
