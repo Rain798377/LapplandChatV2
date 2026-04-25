@@ -8,6 +8,7 @@ from memory import load_memory, update_memory_from_conversation
 from app.ai import (groq_client, histories, get_ai_response, add_to_history, maybe_shift_mood)
 from commands import download, random_cmds, memory_cmds, misc_cmds
 from checksum import checksum
+from colors import *
 
 checksum()
 
@@ -35,12 +36,12 @@ async def on_ready():
     tree.copy_global_to(guild=guild)
     await tree.sync(guild=guild)
     await tree.sync()
-    print(f"logged in as {bot.user} ✓", flush=True)
+    print(f"{GREEN}Logged in as {bot.user} ✓{RESET}", flush=True)
 
-    print(f"mood: {ai.current_mood}", flush=True)
+    print(f"{LIGHT_BLUE}Mood: {ai.current_mood}{RESET}", flush=True)
 
     memory = load_memory()
-    print(f"loaded memory for {len(memory)} users", flush=True)
+    print(f"{LIGHT_GREEN}Loaded memory for {len(memory)} users{RESET}", flush=True)
 
 
 @bot.event

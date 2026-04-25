@@ -1,5 +1,6 @@
 import os
 import json
+from colors import *
 from config import MEMORY_FILE
 
 
@@ -52,6 +53,6 @@ Reply with ONLY an updated one-line summary of notes about {display_name}. If no
         if updated_notes:
             memory[user_id] = {"display_name": display_name, "notes": updated_notes}
             save_memory(memory)
-            print(f"[memory] updated {display_name} ({user_id}): {updated_notes}", flush=True)
+            print(f"{LIGHT_BLUE}[memory] Updated {display_name} ({user_id}): {updated_notes}{RESET}", flush=True)
     except Exception as e:
-        print(f"[memory] failed to update: {e}", flush=True)
+        print(f"{RED}[memory] failed to update: {e}{RESET}", flush=True)
