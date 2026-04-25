@@ -526,6 +526,7 @@ async def spotify_queue(interaction: discord.Interaction, query: str):
         await interaction.response.send_message("Couldn't add to queue — make sure spotify is open and playing something, and you've linked your account (`/spotify link`)", ephemeral=True)
 
 @tree.command(name="download-spotify", description="Download music from Spotify links")
+@app_commands.describe(link="Spotify link to download", format="Output format")
 async def spotify_download(interaction: discord.Interaction, link: str, format: str = "mp3"):
     """
     Download music from a Spotify link.
@@ -601,7 +602,7 @@ tree.add_command(spotify_group)
 async def on_ready():
     guild = discord.Object(id=1434279163346423963)  # Replace with your server's ID
     tree.copy_global_to(guild=guild)
-    await tree.sync()
+    await tree.sync(guild=guild)
     print(f"logged in as {bot.user} ✓", flush=True)
     print(f"mood: {current_mood}", flush=True)
     memory = load_memory()
