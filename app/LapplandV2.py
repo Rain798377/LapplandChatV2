@@ -7,6 +7,9 @@ from config import (DISCORD_TOKEN, ALLOWED_CHANNELS, MIN_CHARS, REPLY_TO_ALL, RE
 from memory import load_memory, update_memory_from_conversation
 from app.ai import (groq_client, histories, get_ai_response, add_to_history, maybe_shift_mood)
 from commands import download, random_cmds, memory_cmds, misc_cmds
+from checksum import checksum
+
+checksum()
 
 # ── Bot setup ─────────────────────────────────────────────────────────────────
 intents = discord.Intents.default()
