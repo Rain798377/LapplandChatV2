@@ -9,6 +9,7 @@ import asyncio
 import tempfile
 import glob
 import secrets
+import requests
 
 # ── Config ───────────────────────────────────────────────────────────────────
 DISCORD_TOKEN    = os.environ.get("DISCORD_TOKEN")
@@ -145,6 +146,25 @@ def get_ai_response(channel_id: int, user_message: str, username: str, memory: d
     histories[channel_id].append({"role": "assistant", "content": reply})
     return reply
 
+# ── Classes ───────────────────────────────────────────────────────────────────
+
+class EditMemoryModal(discord.ui.Modal, title="Edit Your Memory"):
+    def __init__(self, user_id: str, current_notes: str, memory: dict):
+        super().__init__()
+        self.user_id = user_id
+        self.memory = memory
+        self.notes = discord.ui.TextInput(
+            label="Your notes",
+            style=discord.TextStyle.paragraph,
+            default=current_notes,  # pre-fills with existing memory
+            max_length=500,
+        )
+        self.add_item(self.notes)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        self.memory[self.user_id]["notes"] = self.notes.value
+        save_memory(self.memory)
+        await interaction.response.send_message("memory updated", ephemeral=True)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def add_to_history(channel_id: int, username: str, content: str):
@@ -278,12 +298,68 @@ def _run_ydl(opts: dict, url: str):
     with yt_dlp.YoutubeDL(opts) as ydl:
         ydl.download([url])
 
-@tree.command(name="random-number", description="Returns a random number below a number you choose.")
+random_group = app_commands.Group(name="random", description="Random commands")
+
+@random_group.command(name="number", description="Returns a random number below a number you choose.")
 async def random_number(interaction: discord.Interaction, max_number: int):
     await interaction.response.send_message(f"Your random number is: {secrets.randbelow(max_number) + 1}")
 
+@random_group.command(name="coin", description="Flips a coin for you, heads or tails.")
+async def coin_flip(interaction: discord.Interaction):
+    result = secrets.choice(["heads", "tails"])
+    await interaction.response.send_message(f"The coin landed on: {result}")
+
+@random_group.command(name="die", description="Rolls a die with a specified number of sides.")
+async def roll_die(interaction: discord.Interaction, sides: int):
+    result = secrets.randbelow(sides) + 1
+    await interaction.response.send_message(f"You rolled a {result} on a {sides}-sided die.")
+
+@random_group.command(name="choice", description="Selects a random item from a list you provide.")
+@app_commands.describe(items="A comma-separated list of items to choose from.")
+async def random_choice(interaction: discord.Interaction, items: str):
+    item_list = [item.strip() for item in items.split(",")]
+    result = secrets.choice(item_list)
+    await interaction.response.send_message(f"I choose: {result}")
+
+@random_group.command(name="word", description="Tells you a random word.")
+async def random_word(interaction: discord.Interaction):
+    words = [line.strip() for line in requests.get("https://raw.githubusercontent.com/dwyl/english-words/master/words.txt").text.splitlines() if len(line.strip()) <= 12]
+    result = secrets.choice(words)
+    await interaction.response.send_message(f"Your random word is: {result}")
+
+
 # CHANGED: added /my-memory command
-@tree.command(name="my-memory", description="Get what the bot remembers about you.")
+memory_group = app_commands.Group(name="memory", description="Memory related commands")
+
+@memory_group.command(name="wipe-all", description="Wipe all memory the bot has (admin only)")
+async def wipe_memory(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("you're not an admin lol", ephemeral=True)
+        return
+    save_memory({})
+    await interaction.response.send_message("all memory wiped", ephemeral=True)
+
+@memory_group.command(name="wipe", description="Wipe your memory from the bot")
+async def wipe_my_memory(interaction: discord.Interaction):
+    memory = load_memory()
+    user_id = str(interaction.user.id)
+    if user_id in memory:
+        del memory[user_id]
+        save_memory(memory)
+        await interaction.response.send_message("your memory has been wiped", ephemeral=True)
+    else:
+        await interaction.response.send_message("i don't have anything on you", ephemeral=True)
+
+@memory_group.command(name="edit", description="Edit what the bot remembers about you")
+async def change_my_memory(interaction: discord.Interaction):
+    memory = load_memory()
+    user_id = str(interaction.user.id)
+    if user_id not in memory:
+        await interaction.response.send_message("i don't have any memory of you yet", ephemeral=True)
+        return
+    await interaction.response.send_modal(EditMemoryModal(user_id, memory[user_id]["notes"], memory))
+
+@memory_group.command(name="view", description="Get what the bot remembers about you")
 @app_commands.describe(format="File format to return (json or txt)")
 @app_commands.choices(format=[
     app_commands.Choice(name="json", value="json"),
@@ -291,16 +367,13 @@ async def random_number(interaction: discord.Interaction, max_number: int):
 ])
 async def my_memory(interaction: discord.Interaction, format: str = "txt"):
     memory = load_memory()
-    user_id = str(interaction.user.id)  # CHANGED: lookup by user ID not display name
+    user_id = str(interaction.user.id)
     entry = memory.get(user_id)
-
     if not entry:
-        await interaction.response.send_message("i don't have anything on you yet", ephemeral=True)
+        await interaction.response.send_message("I don't have anything on you yet", ephemeral=True)
         return
-
     display_name = entry["display_name"]
     notes = entry["notes"]
-
     with tempfile.TemporaryDirectory() as tmpdir:
         if format == "json":
             filepath = os.path.join(tmpdir, f"{display_name}_memory.json")
@@ -310,11 +383,19 @@ async def my_memory(interaction: discord.Interaction, format: str = "txt"):
             filepath = os.path.join(tmpdir, f"{display_name}_memory.txt")
             with open(filepath, "w") as f:
                 f.write(f"memory log for {display_name}\n\n{notes}")
-
         await interaction.response.send_message(
             file=discord.File(filepath, os.path.basename(filepath)),
             ephemeral=True
         )
+@tree.command(name="ship", description="Ship two users and get a compatibility rating")
+@app_commands.describe(user1="First user to ship", user2="Second user to ship")
+async def ship_users(interaction: discord.Interaction, user1: discord.User, user2: discord.User):
+    compatibility = secrets.randbelow(101)  # 0 to 100
+    await interaction.response.send_message(f"❤️ {user1.display_name} + {user2.display_name} = {compatibility}% compatible! ❤️")
+
+# ── register commands ────────────────────────────────────────────────────────────
+tree.add_command(memory_group)
+tree.add_command(random_group)
 
 # ── Events ────────────────────────────────────────────────────────────────────
 @bot.event
