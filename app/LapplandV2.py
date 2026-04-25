@@ -528,7 +528,7 @@ async def spotify_queue(interaction: discord.Interaction, query: str):
 
 VALID_FORMATS = {"mp3", "ogg", "flac"}
 
-@tree.command(name="spotify_download_music", description="Download music from Spotify links")
+@tree.command(name="spoti_download", description="Download music from Spotify links")
 async def spotify_download(interaction: discord.Interaction, link: str, format: str = "mp3"):
     await interaction.response.defer()
 
@@ -541,37 +541,53 @@ async def spotify_download(interaction: discord.Interaction, link: str, format: 
         await interaction.followup.send("Invalid Spotify link.")
         return
 
+    download_dir = f"/tmp/spotdl_{interaction.id}"
+    os.makedirs(download_dir, exist_ok=True)
+
     try:
         process = await asyncio.create_subprocess_exec(
-            "spotdl", "--format", format, "--output", "-", link,  # "-" pipes to stdout
+            "spotdl", "--format", format, "--output", download_dir, link,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
 
-        stdout, stderr = await process.communicate()
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=120)
+        except asyncio.TimeoutError:
+            process.kill()
+            await interaction.followup.send("Download timed out after 2 minutes.")
+            return
+
+        stdout_msg = stdout.decode().strip()
+        stderr_msg = stderr.decode().strip()
+        print(f"[spotdl] code: {process.returncode}\nstdout: {stdout_msg}\nstderr: {stderr_msg}")
 
         if process.returncode != 0:
-            stdout_msg = stdout[:200].decode().strip()
-            stderr_msg = stderr[:200].decode().strip()
             error_message = stderr_msg or stdout_msg or "Unknown error"
-            await interaction.followup.send(f"Error:\n```{error_message}```")
+            await interaction.followup.send(f"Error:\n```{error_message[:1900]}```")
             return
 
-        if not stdout:
-            await interaction.followup.send("No audio data received.")
+        files = [f for f in os.listdir(download_dir) if f.endswith(f".{format}")]
+
+        if not files:
+            await interaction.followup.send(f"No files downloaded. spotdl output:\n```{stdout_msg[:1900]}```")
             return
 
-        # Check size before sending
-        size_mb = len(stdout) / (1024 * 1024)
-        if size_mb > 8:
-            await interaction.followup.send(f"File too large to send ({size_mb:.2f} MB). Try a shorter track.")
-            return
+        for file in files:
+            file_path = os.path.join(download_dir, file)
+            size_mb = os.path.getsize(file_path) / (1024 * 1024)
 
-        audio_file = io.BytesIO(stdout)
-        await interaction.followup.send(file=discord.File(audio_file, filename=f"track.{format}"))
+            if size_mb <= 8:
+                await interaction.followup.send(file=discord.File(file_path))
+            else:
+                await interaction.followup.send(f"**{file}** is too large ({size_mb:.2f} MB).")
 
     except Exception as e:
         await interaction.followup.send(f"An error occurred: {str(e)[:1900]}")
+
+    finally:
+        if os.path.exists(download_dir):
+            shutil.rmtree(download_dir)
 
 
 
