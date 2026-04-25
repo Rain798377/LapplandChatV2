@@ -22,7 +22,7 @@ REPLY_TO_ALL         = True
 ALLOWED_CHANNELS     = [1483716134250217572]
 MIN_CHARS            = 5
 REPLY_CHANCE         = random.uniform(0.8, 0.9)
-MEMORY_FILE          = "../data/memory.json" # data folder outside this folder.
+MEMORY_FILE          = "data/memory.json" # data folder outside this folder.
 MAX_FILE_SIZE_MB     = 25
 # ─────────────────────────────────────────────────────────────────────────────
 
