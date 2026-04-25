@@ -78,7 +78,7 @@ async def on_message(message: discord.Message):
             return
         if random.random() > REPLY_CHANCE:
             add_to_history(message.channel.id, message.author.display_name, content)
-            if len(content.split()) > 5 and random.random() < 0.5: # random chance to update memory even on non-reply messages if they're long enough, to keep it fresh
+            if len(content.split()) > 5 and random.random() < 0.75: # random chance to update memory even on non-reply messages if they're long enough, to keep it fresh
                 update_memory_from_conversation(
                     message.channel.id, str(message.author.id),
                     message.author.display_name, memory, histories, groq_client
@@ -88,7 +88,7 @@ async def on_message(message: discord.Message):
     async with message.channel.typing():
         try:
             reply = get_ai_response(message.channel.id, content, message.author.display_name, memory)
-            if len(content.split()) > 5 and random.random() < 0.5:
+            if len(content.split()) > 5 and random.random() < 0.75:
                 update_memory_from_conversation(
                     message.channel.id, str(message.author.id),
                     message.author.display_name, memory, histories, groq_client
