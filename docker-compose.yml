@@ -10,3 +10,15 @@ services:
     restart: unless-stopped
     volumes:
       - ./app:/app
+
+  oauth:
+    build:
+      context: .
+      dockerfile: Dockerfile.oauth
+    container_name: lappland-spotify-oauth
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./data:/app/data
