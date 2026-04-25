@@ -525,10 +525,8 @@ async def spotify_queue(interaction: discord.Interaction, query: str):
     else:
         await interaction.response.send_message("Couldn't add to queue — make sure spotify is open and playing something, and you've linked your account (`/spotify link`)", ephemeral=True)
 
-@spotify_group.command(name="spotify", description="Download music from Spotify links")
-async def spotify_download(interaction: discord.Interaction, 
-                           link: str, 
-                           format: str = "mp3"):
+@tree.command(name="download-spotify", description="Download music from Spotify links")
+async def spotify_download(interaction: discord.Interaction, link: str, format: str = "mp3"):
     """
     Download music from a Spotify link.
     
