@@ -525,85 +525,76 @@ async def spotify_queue(interaction: discord.Interaction, query: str):
     else:
         await interaction.response.send_message("Couldn't add to queue — make sure spotify is open and playing something, and you've linked your account (`/spotify link`)", ephemeral=True)
 
+VALID_FORMATS = {"mp3", "ogg", "flac"}
+
 @tree.command(name="spotify_download", description="Download music from Spotify links")
 async def spotify_download(interaction: discord.Interaction, link: str, format: str = "mp3"):
-    """
-    Download music from a Spotify link.
-    
-    Parameters:
-    - link: Spotify track, playlist, or album link
-    - format: Output format (mp3, ogg, flac)
-    """
     await interaction.response.defer()
-    
+
+    # Validate format
+    if format not in VALID_FORMATS:
+        await interaction.followup.send(f"Invalid format. Choose from: {', '.join(VALID_FORMATS)}")
+        return
+
     # Validate Spotify link
-    spotify_regex = r"https?://(open\.spotify\.com/(track|album|playlist)/[a-zA-Z0-9]+)"
+    spotify_regex = r"https?://open\.spotify\.com/(track|album|playlist)/[a-zA-Z0-9]+"
     if not re.match(spotify_regex, link):
         await interaction.followup.send("Invalid Spotify link. Please provide a valid track, album, or playlist link.")
         return
-    
-    # Create download directory if it doesn't exist
-    download_dir = "downloads"
-    if not os.path.exists(download_dir):
-        os.makedirs(download_dir)
-    
+
+    # Use a unique temp directory per request to avoid stale file conflicts
+    download_dir = f"downloads/{interaction.id}"
+    os.makedirs(download_dir, exist_ok=True)
+
     try:
-        # Execute the spotdl command
-        command = f"spotdl --format {format} --output-dir {download_dir} {link}"
-        process = await asyncio.create_subprocess_shell(
-            command,
+        # Use exec (not shell) to avoid shell injection
+        process = await asyncio.create_subprocess_exec(
+            "spotdl", "--format", format, "--output", download_dir, link,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        
+
         stdout, stderr = await process.communicate()
-        
+
         if process.returncode != 0:
-            error_message = stderr.decode()
-            # Truncate error message if too long
-            if len(error_message) > 1900:
-                error_message = error_message[:1900] + "..."
-            await interaction.followup.send(f"Error downloading music: {error_message}")
+            error_message = stderr.decode()[:1900]
+            await interaction.followup.send(f"Error downloading music:\n```{error_message}```")
             return
-        
-        # Find the downloaded file(s)
+
+        # Only list files from THIS request's directory
         files = [f for f in os.listdir(download_dir) if f.endswith(f".{format}")]
-        
+
         if not files:
             await interaction.followup.send("No files were downloaded. The track might not be available.")
             return
-        
-        # Send initial message
-        await interaction.followup.send(f"Successfully downloaded {len(files)} file(s). Sending them now...")
-        
-        # Note: Discord has a file size limit of 8MB for regular bots
+
+        await interaction.followup.send(f"Successfully downloaded {len(files)} file(s). Sending now...")
+
         for file in files:
             file_path = os.path.join(download_dir, file)
             file_size = os.path.getsize(file_path)
-            
-            if file_size <= 8 * 1024 * 1024:  # 8MB in bytes
+
+            if file_size <= 8 * 1024 * 1024:
                 try:
-                    await interaction.followup.send(file=File(file_path))
+                    await interaction.followup.send(file=discord.File(file_path))
                 except discord.errors.HTTPException as e:
                     if "Must be 2000 or fewer in length" in str(e):
-                        # If file name is too long, send with a shorter name
-                        await interaction.followup.send(file=File(file_path, filename=f"download.{format}"))
+                        await interaction.followup.send(file=discord.File(file_path, filename=f"download.{format}"))
                     else:
-                        raise e
+                        raise
             else:
-                # For large files, just inform the user
                 size_mb = file_size / (1024 * 1024)
                 await interaction.followup.send(
-                    f"File \"{file}\" is too large to send directly ({size_mb:.2f}MB). "
-                    f"Please download it from the server directly."
+                    f"**{file}** is too large to send ({size_mb:.2f} MB)."
                 )
-                
+
     except Exception as e:
-        error_message = str(e)
-        # Truncate error message if too long
-        if len(error_message) > 1900:
-            error_message = error_message[:1900] + "..."
-        await interaction.followup.send(f"An error occurred: {error_message}")
+        await interaction.followup.send(f"An error occurred: {str(e)[:1900]}")
+
+    finally:
+        # Clean up the temp directory after sending
+        if os.path.exists(download_dir):
+            shutil.rmtree(download_dir)
 
 
 
