@@ -2,8 +2,6 @@ import os
 import json
 import random
 import discord
-from groq import Groq
-from discord import app_commands
 import yt_dlp
 import asyncio
 import tempfile
@@ -13,7 +11,11 @@ import requests
 import shutil
 import asyncio
 import re
+import io
 import aiohttp
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
+from groq import Groq
+from discord import app_commands
 
 # ── Config ───────────────────────────────────────────────────────────────────
 DISCORD_TOKEN        = os.environ.get("DISCORD_TOKEN")
@@ -533,6 +535,150 @@ async def ship_users(interaction: discord.Interaction, user1: discord.User, user
     compatibility = secrets.randbelow(101)  # 0 to 100
     await interaction.response.send_message(f"❤️ {user1.display_name} + {user2.display_name} = {compatibility}% compatible! ❤️")
 
+@tree.command(name="mood", description="Check the bot's current mood")
+async def check_mood(interaction: discord.Interaction):
+    await interaction.response.send_message(f"I'm currently feeling {current_mood}!")
+
+@tree.command(name="8ball", description="Ask the magic 8-ball a yes/no question")
+@app_commands.describe(question="Your question for the 8-ball")
+async def magic_8ball(interaction: discord.Interaction, question: str):
+    responses = [
+        "It is certain.",
+        "It is decidedly so.",
+        "Without a doubt.",
+        "Yes - definitely.",
+        "You may rely on it.",
+        "As I see it, yes.",
+        "Most likely.",
+        "Outlook good.",
+        "Yes.",
+        "Signs point to yes.",
+        "Reply hazy, try again.",
+        "Ask again later.",
+        "Better not tell you now.",
+        "Cannot predict now.",
+        "Concentrate and ask again.",
+        "Don't count on it.",
+        "My reply is no.",
+        "My sources say no.",
+        "Outlook not so good.",
+        "Very doubtful."
+    ]
+    await interaction.response.send_message(f"{question}\n{random.choice(responses)}")
+
+@tree.command(name="quote", description="Turn a message into a quote image")
+@app_commands.describe(
+    message="The message to quote",
+    author="The author's name",
+    user="Tag a user to use their avatar (optional)"
+)
+async def quote(interaction: discord.Interaction, message: str, author: str, user: discord.User = None):
+    await interaction.response.defer()
+
+    # --- Settings ---
+    W, H = 1200, 400
+    bg_color = (0, 0, 0)
+    text_color = (255, 255, 255)
+    sub_color = (180, 180, 180)
+
+    img = Image.new("RGB", (W, H), bg_color)
+    draw = ImageDraw.Draw(img)
+
+    # --- Load fonts (use defaults if custom fonts not available) ---
+    try:
+        font_main = ImageFont.truetype("arial.ttf", 52)
+        font_sub = ImageFont.truetype("arial.ttf", 28)
+    except:
+        font_main = ImageFont.load_default()
+        font_sub = ImageFont.load_default()
+
+    # --- Fetch and paste avatar on the LEFT ---
+    if user:
+        avatar_url = user.display_avatar.url
+        async with aiohttp.ClientSession() as session:
+            async with session.get(avatar_url) as resp:
+                avatar_data = await resp.read()
+
+        avatar = Image.open(io.BytesIO(avatar_data)).convert("RGBA").resize((H, H))
+
+        # Fade avatar from left to right
+        fade = Image.new("L", (H, H))
+        for x in range(H):
+            fade.putpixel((x, 0), 0)  # rough fade
+        for x in range(H):
+            alpha = max(0, 255 - int((x / H) * 255))
+            for y in range(H):
+                fade.putpixel((x, y), alpha)
+
+        avatar.putalpha(fade)
+        img.paste(avatar, (0, 0), avatar)
+
+    # --- Draw quote text on the RIGHT ---
+    text_x = W // 2 + 50
+
+    # Center text vertically
+    draw.text((text_x, H // 2 - 60), message, font=font_main, fill=text_color, anchor="lm")
+    draw.text((text_x, H // 2 + 20), f"- {author}", font=font_sub, fill=sub_color, anchor="lm")
+
+    # --- Send image ---
+    buffer = io.BytesIO()
+    img.save(buffer, format="PNG")
+    buffer.seek(0)
+
+    await interaction.followup.send(file=discord.File(buffer, filename="quote.png"))
+
+@tree.context_menu(name="Make Quote")
+async def make_quote(interaction: discord.Interaction, message: discord.Message):
+    await interaction.response.defer()
+
+    # --- Settings ---
+    W, H = 1200, 400
+    bg_color = (0, 0, 0)
+    text_color = (255, 255, 255)
+    sub_color = (180, 180, 180)
+
+    img = Image.new("RGB", (W, H), bg_color)
+    draw = ImageDraw.Draw(img)
+
+    # --- Fonts ---
+    try:
+        font_main = ImageFont.truetype("arial.ttf", 52)
+        font_sub = ImageFont.truetype("arial.ttf", 28)
+    except:
+        font_main = ImageFont.load_default()
+        font_sub = ImageFont.load_default()
+
+    # --- Fetch avatar from message author ---
+    avatar_url = message.author.display_avatar.url
+    async with aiohttp.ClientSession() as session:
+        async with session.get(avatar_url) as resp:
+            avatar_data = await resp.read()
+
+    avatar = Image.open(io.BytesIO(avatar_data)).convert("RGBA").resize((H, H))
+
+    # Fade avatar left to right
+    fade = Image.new("L", (H, H))
+    for x in range(H):
+        alpha = max(0, 255 - int((x / H) * 255))
+        for y in range(H):
+            fade.putpixel((x, y), alpha)
+    avatar.putalpha(fade)
+    img.paste(avatar, (0, 0), avatar)
+
+    # --- Draw text ---
+    text_x = W // 2 + 50
+    author_text = f"- {message.author.display_name}"
+
+    draw.text((text_x, H // 2 - 60), message.content, font=font_main, fill=text_color, anchor="lm")
+    draw.text((text_x, H // 2 + 20), author_text, font=font_sub, fill=sub_color, anchor="lm")
+
+    # --- Send ---
+    buffer = io.BytesIO()
+    img.save(buffer, format="PNG")
+    buffer.seek(0)
+
+    await interaction.followup.send(file=discord.File(buffer, filename="quote.png"))
+
 # ── register commands ────────────────────────────────────────────────────────────
 tree.add_command(memory_group)
 tree.add_command(random_group)
@@ -591,6 +737,6 @@ async def on_message(message: discord.Message):
             await message.reply(reply, mention_author=False)
         except Exception as e:
             print(f"[error] {e}", flush=True)
-            await message.reply("lol something broke on my end, try again")
+            await message.reply("An error has occured, try again later.", mention_author=False)
 
 bot.run(DISCORD_TOKEN)
