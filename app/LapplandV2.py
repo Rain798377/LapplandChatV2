@@ -469,6 +469,7 @@ tree.add_command(random_group)
 @bot.event
 async def on_ready():
     guild = discord.Object(id=1434279163346423963)  # Replace with your server's ID
+    tree.copy_global_to(guild=guild)
     await tree.sync()
     print(f"logged in as {bot.user} ✓", flush=True)
     print(f"mood: {current_mood}", flush=True)
