@@ -259,6 +259,7 @@ async def my_memory(interaction: discord.Interaction, format: str = "txt"):
 # ── Events ────────────────────────────────────────────────────────────────────
 @bot.event
 async def on_ready():
+    guild = discord.Object(id=1434279163346423963)  # Replace with your server's ID
     await tree.sync()
     print(f"logged in as {bot.user} ✓", flush=True)
     print(f"mood: {current_mood}", flush=True)
