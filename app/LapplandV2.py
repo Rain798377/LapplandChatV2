@@ -3,7 +3,7 @@ import json
 import random
 import discord
 from groq import Groq
-from discord import app_commands, File
+from discord import app_commands
 import yt_dlp
 import asyncio
 import tempfile
@@ -11,20 +11,13 @@ import glob
 import secrets
 import requests
 import shutil
-import subprocess
 import asyncio
 import re
-import io
-import spotipy
 import aiohttp
-from spotipy.oauth2 import SpotifyClientCredentials
 
 # ── Config ───────────────────────────────────────────────────────────────────
 DISCORD_TOKEN        = os.environ.get("DISCORD_TOKEN")
 GROQ_API_KEY         = os.environ.get("GROQ_API_KEY")
-SPOTIFY_CLIENT_ID    = os.environ.get("SPOTIFY_CLIENT_ID")
-SPOTIFY_CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET")
-SPOTIFY_REDIRECT_URI = os.environ.get("SPOTIFY_REDIRECT_URI")
 BOT_NAME             = "Lappland"
 REPLY_TO_ALL         = True
 ALLOWED_CHANNELS     = [1483716134250217572]
@@ -57,10 +50,6 @@ intents.message_content = True
 bot = discord.Client(intents=intents)
 tree = app_commands.CommandTree(bot)
 
-sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
-    client_id=SPOTIFY_CLIENT_ID,
-    client_secret=SPOTIFY_CLIENT_SECRET
-))
 
 GREETINGS = {"hello", "hi", "hey", "sup", "yo", "hiya", "heya", "howdy", "morning", "evening", "wsp"}
 
@@ -227,7 +216,7 @@ async def download_media(interaction: discord.Interaction, url: str, quality: st
             "postprocessors": [{
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": "mp3",
-                "preferredquality": "192",
+                "preferredquality": "0",
             }],
         }
 
@@ -276,18 +265,18 @@ async def download_media(interaction: discord.Interaction, url: str, quality: st
                 loop = asyncio.get_event_loop()
                 await loop.run_in_executor(None, lambda: _run_ydl(ydl_opts, url))
             except Exception as e:
-                await interaction.followup.send(f"couldn't download that lol: `{e}`")
+                await interaction.followup.send(f"Couldn't download audio: `{e}`")
                 return
 
             files = glob.glob(os.path.join(tmpdir, "*"))
             if not files:
-                await interaction.followup.send("downloaded nothing?? check the url")
+                await interaction.followup.send("Empty, check URL.")
                 return
 
             filepath = files[0]
             size_mb = os.path.getsize(filepath) / (1024 * 1024)
             if size_mb > MAX_FILE_SIZE_MB:
-                await interaction.followup.send(f"audio came out {size_mb:.1f}MB, too big to upload")
+                await interaction.followup.send(f"Audio came out {size_mb:.1f}MB, too big to upload")
                 return
 
             await interaction.followup.send(file=discord.File(filepath, os.path.basename(filepath)))
@@ -298,15 +287,15 @@ async def download_media(interaction: discord.Interaction, url: str, quality: st
         filepath = None
 
         if quality == "auto":
-            # try 720p first, fall back to 480p
-            await interaction.followup.send("trying 720p...", wait=True)
-            filepath = await attempt_download(720)
-            if not filepath:
-                await interaction.followup.send("720p too big, trying 480p...", wait=True)
-                filepath = await attempt_download(480)
-                if not filepath:
-                    await interaction.followup.send("480p still too big, can't upload it")
-                    return
+            resolutions = [1080, 720, 480, 360]
+            for res in resolutions:
+                await interaction.followup.send(f"trying {res}p...", wait=True)
+                filepath = await attempt_download(res)
+                if filepath:
+                    break
+            else:
+                await interaction.followup.send("track is too large to upload even at lowest quality.")
+                return
         else:
             filepath = await attempt_download(int(quality))
             if not filepath:
@@ -324,7 +313,7 @@ async def download_media(interaction: discord.Interaction, url: str, quality: st
             pass
 
     except Exception as e:
-        await interaction.followup.send(f"couldn't download that lol: `{e}`")
+        await interaction.followup.send(f"Couldn't download video: `{e}`")
 
 async def download_spotify_track(interaction: discord.Interaction, url: str):
     status = await interaction.followup.send("Detected Spotify link, fetching track info...", wait=True)
@@ -485,10 +474,10 @@ memory_group = app_commands.Group(name="memory", description="Memory related com
 @memory_group.command(name="wipe-all", description="Wipe all memory the bot has (admin only)")
 async def wipe_memory(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("you're not an admin lol", ephemeral=True)
+        await interaction.response.send_message("You're not an administrator.", ephemeral=True)
         return
     save_memory({})
-    await interaction.response.send_message("all memory wiped", ephemeral=True)
+    await interaction.response.send_message("All memory wiped.", ephemeral=True)
 
 @memory_group.command(name="wipe", description="Wipe your memory from the bot")
 async def wipe_my_memory(interaction: discord.Interaction):
@@ -497,16 +486,16 @@ async def wipe_my_memory(interaction: discord.Interaction):
     if user_id in memory:
         del memory[user_id]
         save_memory(memory)
-        await interaction.response.send_message("your memory has been wiped", ephemeral=True)
+        await interaction.response.send_message("Your memory has been wiped.", ephemeral=True)
     else:
-        await interaction.response.send_message("i don't have anything on you", ephemeral=True)
+        await interaction.response.send_message("I don't have anything on you.", ephemeral=True)
 
 @memory_group.command(name="edit", description="Edit what the bot remembers about you")
 async def change_my_memory(interaction: discord.Interaction):
     memory = load_memory()
     user_id = str(interaction.user.id)
     if user_id not in memory:
-        await interaction.response.send_message("i don't have any memory of you yet", ephemeral=True)
+        await interaction.response.send_message("I don't have any memory of you yet.", ephemeral=True)
         return
     await interaction.response.send_modal(EditMemoryModal(user_id, memory[user_id]["notes"], memory))
 
