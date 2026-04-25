@@ -1,3 +1,4 @@
+import re
 import random
 from groq import Groq
 from config import GROQ_API_KEY, SYSTEM_PROMPT, MOODS, MAX_HISTORY, MODEL
@@ -45,6 +46,7 @@ def get_ai_response(channel_id: int, user_message: str, username: str, memory: d
     )
 
     reply = response.choices[0].message.content.strip()
+    reply = re.sub(r'^(Lapl(land)?)\s*:\s*', '', reply, flags=re.IGNORECASE).strip()
     histories[channel_id].append({"role": "assistant", "content": reply})
     return reply
 
