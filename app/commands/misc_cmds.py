@@ -12,6 +12,9 @@ from ai import current_mood
 
 OWNER_ID = 955604666689921086
 
+def is_admin(interaction: discord.Interaction) -> bool:
+    return interaction.guild is not None and interaction.user.guild_permissions.administrator
+
 def setup(tree: app_commands.CommandTree, bot):
 
     @tree.command(name="ship", description="Ship two users and get a compatibility rating")
@@ -65,7 +68,7 @@ def setup(tree: app_commands.CommandTree, bot):
 
     @tree.command(name="change_mood", description="Change the bot's mood (admin only)")
     async def change_mood(interaction: discord.Interaction, mood: str):
-        if not interaction.user.guild_permissions.administrator:
+        if not is_admin(interaction):
             await interaction.response.send_message("You're not an administrator.", ephemeral=True)
             return
         ai.current_mood = mood
@@ -82,7 +85,7 @@ def setup(tree: app_commands.CommandTree, bot):
     @app_commands.allowed_installs(guilds=True, users=True)
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def echo(interaction: discord.Interaction, message: str):
-        if not interaction.user.guild_permissions.administrator:
+        if not is_admin(interaction):
             await interaction.response.send_message("You're not an administrator.", ephemeral=True)
             return
         await interaction.response.send_message(message)
@@ -91,19 +94,28 @@ def setup(tree: app_commands.CommandTree, bot):
     @app_commands.allowed_installs(guilds=True, users=True)
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def curl(interaction: discord.Interaction, url: str):
-        if not interaction.user.guild_permissions.administrator:
+        if not is_admin(interaction):
             await interaction.response.send_message("You're not an administrator.", ephemeral=True)
             return
+
+        if not url.startswith("http://") and not url.startswith("https://"):
+            url = "https://" + url
+
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as resp:
                 content = await resp.text()
-        await interaction.response.send_message(rf"Content from {url}:\n```{content}```")
+
+        if len(content) <= 1900:
+            await interaction.response.send_message(f"Content from {url}:\n```{content}```")
+        else:
+            file = discord.File(io.BytesIO(content.encode()), filename="response.txt")
+            await interaction.response.send_message(file=file)
 
     @tree.command(name="ip", description="Get the bot's public IP address (admin only)")
     @app_commands.allowed_installs(guilds=True, users=True)
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def get_ip(interaction: discord.Interaction):
-        if not interaction.user.guild_permissions.administrator:
+        if not is_admin(interaction):
             await interaction.response.send_message("You're not an administrator.", ephemeral=True)
             return
         async with aiohttp.ClientSession() as session:
@@ -115,27 +127,31 @@ def setup(tree: app_commands.CommandTree, bot):
     @app_commands.allowed_installs(guilds=True, users=True)
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def terminal(interaction: discord.Interaction, command: str):
-        if not interaction.user.id == OWNER_ID:
+        if interaction.user.id != OWNER_ID:
             await interaction.response.send_message("You're not the owner.", ephemeral=True)
             return
+
+        await interaction.response.defer()
+
         proc = await asyncio.create_subprocess_shell(
             command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        stdout, stderr = await proc.communicate()
-        output = stdout.decode() + stderr.decode()
-        if len(output) > 1900:
-            output = output[:1900] + "\n...[output truncated]"
-        await interaction.response.send_message(f"Output of `{command}`:\n```{output}```")
 
-        try: # in case the command hangs, we don't want to leave a pending response forever
+        try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
         except asyncio.TimeoutError:
             proc.kill()
-            await interaction.response.send_message("Command timed out.", ephemeral=True)
+            await proc.communicate()  # reap the process
+            await interaction.followup.send("Command timed out.", ephemeral=True)
             return
-        
+
+        output = stdout.decode() + stderr.decode()
+        if len(output) > 1900:
+            output = output[:1900] + "\n...[output truncated]"
+        await interaction.followup.send(f"Output of `{command}`:\n```{output}```")
+
     @tree.command(name="time", description="Get the current server time")
     @app_commands.allowed_installs(guilds=True, users=True)
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
@@ -193,8 +209,23 @@ def setup(tree: app_commands.CommandTree, bot):
             avatar.putalpha(fade)
             img.paste(avatar, (0, 0), avatar)
 
+        # Wrap long messages so they don't overflow the image
+        max_chars_per_line = 30
+        words = message.split()
+        lines, current = [], ""
+        for word in words:
+            if len(current) + len(word) + 1 <= max_chars_per_line:
+                current = (current + " " + word).strip()
+            else:
+                if current:
+                    lines.append(current)
+                current = word
+        if current:
+            lines.append(current)
+        wrapped = "\n".join(lines)
+
         text_x = W // 2 + 50
-        draw.text((text_x, H // 2 - 60), message, font=font_main, fill=(255, 255, 255), anchor="lm")
+        draw.text((text_x, H // 2 - 60), wrapped, font=font_main, fill=(255, 255, 255), anchor="lm")
         draw.text((text_x, H // 2 + 20), f"- {author}", font=font_sub, fill=(180, 180, 180), anchor="lm")
 
         buffer = io.BytesIO()
@@ -234,10 +265,10 @@ def setup(tree: app_commands.CommandTree, bot):
         avatar.putalpha(fade)
         img.paste(avatar, (0, 0), avatar)
 
-        text_x      = W // 2 + 80
+        text_x        = W // 2 + 80
         text_y_center = H // 2
-        quote_text  = message.content or "[no text]"
-        author_text = f"- {message.author.display_name}"
+        quote_text    = message.content or "[no text]"
+        author_text   = f"- {message.author.display_name}"
 
         bbox_main = font_main.getbbox(quote_text)
         bbox_sub  = font_sub.getbbox(author_text)
@@ -246,7 +277,7 @@ def setup(tree: app_commands.CommandTree, bot):
         gap       = 20
         start_y   = text_y_center - (main_h + gap + sub_h) // 2
 
-        draw.text((text_x, start_y),               quote_text,  font=font_main, fill=(255, 255, 255))
+        draw.text((text_x, start_y),                quote_text,  font=font_main, fill=(255, 255, 255))
         draw.text((text_x, start_y + main_h + gap), author_text, font=font_sub,  fill=(180, 180, 180))
 
         buffer = io.BytesIO()
