@@ -3,7 +3,7 @@ import json
 import random
 import discord
 from groq import Groq
-from discord import app_commands
+from discord import app_commands, File
 import yt_dlp
 import asyncio
 import tempfile
@@ -13,6 +13,8 @@ import requests
 import spotify
 import shutil
 import subprocess
+import asyncio
+import re
 
 # ── Config ───────────────────────────────────────────────────────────────────
 DISCORD_TOKEN        = os.environ.get("DISCORD_TOKEN")
@@ -364,6 +366,7 @@ async def download_spotify_track(interaction: discord.Interaction, url: str):
 def _run_ydl(opts: dict, url: str):
     with yt_dlp.YoutubeDL(opts) as ydl:
         ydl.download([url])
+
 random_group = app_commands.Group(name="random", description="Random commands")
 
 @random_group.command(name="number", description="Returns a random number below a number you choose.")
@@ -522,11 +525,78 @@ async def spotify_queue(interaction: discord.Interaction, query: str):
     else:
         await interaction.response.send_message("Couldn't add to queue — make sure spotify is open and playing something, and you've linked your account (`/spotify link`)", ephemeral=True)
 
-tree.add_command(spotify_group)
+@spotify_group.command(name="spotify", description="Download music from Spotify links")
+async def spotify_download(interaction: discord.Interaction, 
+                           link: str, 
+                           format: str = "mp3"):
+    """
+    Download music from a Spotify link.
+    
+    Parameters:
+    - link: Spotify track, playlist, or album link
+    - format: Output format (mp3, ogg, flac)
+    """
+    await interaction.response.defer()
+    
+    # Validate Spotify link
+    spotify_regex = r"https?://(open\.spotify\.com/(track|album|playlist)/[a-zA-Z0-9]+)"
+    if not re.match(spotify_regex, link):
+        await interaction.followup.send("Invalid Spotify link. Please provide a valid track, album, or playlist link.")
+        return
+    
+    # Create download directory if it doesn't exist
+    download_dir = "downloads"
+    if not os.path.exists(download_dir):
+        os.makedirs(download_dir)
+    
+    try:
+        # Execute the spotdl command
+        command = f"spotdl --format {format} --output-dir {download_dir} {link}"
+        process = await asyncio.create_subprocess_shell(
+            command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        
+        stdout, stderr = await process.communicate()
+        
+        if process.returncode != 0:
+            await interaction.followup.send(f"Error downloading music: {stderr.decode()}")
+            return
+        
+        # Find the downloaded file(s)
+        files = [f for f in os.listdir(download_dir) if f.endswith(f".{format}")]
+        
+        if not files:
+            await interaction.followup.send("No files were downloaded. The track might not be available.")
+            return
+        
+        # Send the downloaded file(s) to the user
+        await interaction.followup.send(f"Successfully downloaded {len(files)} file(s):")
+        
+        # Note: Discord has a file size limit of 8MB for regular bots
+        for file in files:
+            file_path = os.path.join(download_dir, file)
+            file_size = os.path.getsize(file_path)
+            
+            if file_size <= 8 * 1024 * 1024:  # 8MB in bytes
+                await interaction.followup.send(file=File(file_path))
+            else:
+                await interaction.followup.send(
+                    f"File \"{file}\" is too large to send directly ({file_size / (1024 * 1024):.2f}MB). "
+                    f"Please download it from the server directly."
+                )
+                
+    except Exception as e:
+        await interaction.followup.send(f"An error occurred: {str(e)}")
+
+
+
 
 # ── register commands ────────────────────────────────────────────────────────────
 tree.add_command(memory_group)
 tree.add_command(random_group)
+tree.add_command(spotify_group)
 
 # ── Events ────────────────────────────────────────────────────────────────────
 @bot.event
