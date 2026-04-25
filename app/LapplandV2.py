@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import asyncio
 import re
+import io
 
 # ── Config ───────────────────────────────────────────────────────────────────
 DISCORD_TOKEN        = os.environ.get("DISCORD_TOKEN")
@@ -527,29 +528,22 @@ async def spotify_queue(interaction: discord.Interaction, query: str):
 
 VALID_FORMATS = {"mp3", "ogg", "flac"}
 
-@tree.command(name="spotify_download", description="Download music from Spotify links")
+@tree.command(name="spotify_download_music", description="Download music from Spotify links")
 async def spotify_download(interaction: discord.Interaction, link: str, format: str = "mp3"):
     await interaction.response.defer()
 
-    # Validate format
     if format not in VALID_FORMATS:
         await interaction.followup.send(f"Invalid format. Choose from: {', '.join(VALID_FORMATS)}")
         return
 
-    # Validate Spotify link
     spotify_regex = r"https?://open\.spotify\.com/(track|album|playlist)/[a-zA-Z0-9]+"
     if not re.match(spotify_regex, link):
-        await interaction.followup.send("Invalid Spotify link. Please provide a valid track, album, or playlist link.")
+        await interaction.followup.send("Invalid Spotify link.")
         return
 
-    # Use a unique temp directory per request to avoid stale file conflicts
-    download_dir = f"downloads/{interaction.id}"
-    os.makedirs(download_dir, exist_ok=True)
-
     try:
-        # Use exec (not shell) to avoid shell injection
         process = await asyncio.create_subprocess_exec(
-            "spotdl", "--format", format, "--output", download_dir, link,
+            "spotdl", "--format", format, "--output", "-", link,  # "-" pipes to stdout
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
@@ -557,46 +551,27 @@ async def spotify_download(interaction: discord.Interaction, link: str, format: 
         stdout, stderr = await process.communicate()
 
         if process.returncode != 0:
-            error_message = stderr.decode()[:1900]
-            await interaction.followup.send(f"Error downloading music:\n```{error_message}```")
+            stdout_msg = stdout[:200].decode().strip()
+            stderr_msg = stderr[:200].decode().strip()
+            error_message = stderr_msg or stdout_msg or "Unknown error"
+            await interaction.followup.send(f"Error:\n```{error_message}```")
             return
 
-        # Only list files from THIS request's directory
-        files = [f for f in os.listdir(download_dir) if f.endswith(f".{format}")]
-
-        if not files:
-            await interaction.followup.send("No files were downloaded. The track might not be available.")
+        if not stdout:
+            await interaction.followup.send("No audio data received.")
             return
 
-        await interaction.followup.send(f"Successfully downloaded {len(files)} file(s). Sending now...")
+        # Check size before sending
+        size_mb = len(stdout) / (1024 * 1024)
+        if size_mb > 8:
+            await interaction.followup.send(f"File too large to send ({size_mb:.2f} MB). Try a shorter track.")
+            return
 
-        for file in files:
-            file_path = os.path.join(download_dir, file)
-            file_size = os.path.getsize(file_path)
-
-            if file_size <= 8 * 1024 * 1024:
-                try:
-                    await interaction.followup.send(file=discord.File(file_path))
-                except discord.errors.HTTPException as e:
-                    if "Must be 2000 or fewer in length" in str(e):
-                        await interaction.followup.send(file=discord.File(file_path, filename=f"download.{format}"))
-                    else:
-                        raise
-            else:
-                size_mb = file_size / (1024 * 1024)
-                await interaction.followup.send(
-                    f"**{file}** is too large to send ({size_mb:.2f} MB)."
-                )
+        audio_file = io.BytesIO(stdout)
+        await interaction.followup.send(file=discord.File(audio_file, filename=f"track.{format}"))
 
     except Exception as e:
         await interaction.followup.send(f"An error occurred: {str(e)[:1900]}")
-
-    finally:
-        # Clean up the temp directory after sending
-        if os.path.exists(download_dir):
-            shutil.rmtree(download_dir)
-
-
 
 
 
