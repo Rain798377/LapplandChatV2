@@ -394,43 +394,51 @@ async def download_spotify_track(interaction: discord.Interaction, url: str):
         await status.edit(content=f"Searching YouTube for: {label}...")
         with tempfile.TemporaryDirectory() as tmpdir:
             try:
-                ydl_opts = {
-                    "outtmpl": os.path.join(tmpdir, "%(title).50s.%(ext)s"),
-                    "quiet": True,
-                    "no_warnings": True,
-                    "noplaylist": True,
-                    "playlist_items": "1",
-                    "format": "bestaudio/best",
-                    "postprocessors": [{
-                        "key": "FFmpegExtractAudio",
-                        "preferredcodec": "mp3",
-                        "preferredquality": "192",
-                    }],
-                }
-                loop = asyncio.get_event_loop()
-                await loop.run_in_executor(None, lambda: _run_ydl(ydl_opts, search_query))
+                # Try highest quality first, fall back if too big
+                for quality in ["0", "128"]:  # 0 = best possible, 128 = fallback
+                    ydl_opts = {
+                        "outtmpl": os.path.join(tmpdir, "%(title).50s.%(ext)s"),
+                        "quiet": True,
+                        "no_warnings": True,
+                        "noplaylist": True,
+                        "playlist_items": "1",
+                        "format": "bestaudio/best",
+                        "postprocessors": [{
+                            "key": "FFmpegExtractAudio",
+                            "preferredcodec": "mp3",
+                            "preferredquality": quality,
+                        }],
+                    }
 
-                files = glob.glob(os.path.join(tmpdir, "*.mp3"))
-                if not files:
-                    continue
+                    loop = asyncio.get_event_loop()
+                    await loop.run_in_executor(None, lambda: _run_ydl(ydl_opts, search_query))
 
-                filepath = files[0]
-                size_mb = os.path.getsize(filepath) / (1024 * 1024)
+                    files = glob.glob(os.path.join(tmpdir, "*.mp3"))
+                    if not files:
+                        break  # no results, try next search
 
-                if size_mb > MAX_FILE_SIZE_MB:
-                    await status.edit(content=f"Track is {size_mb:.1f}MB, too big to upload.")
+                    filepath = files[0]
+                    size_mb = os.path.getsize(filepath) / (1024 * 1024)
+
+                    if size_mb <= MAX_FILE_SIZE_MB:
+                        dest = os.path.join(tempfile.gettempdir(), os.path.basename(filepath))
+                        shutil.copy2(filepath, dest)
+                        await status.edit(content=f"Found: **{clean_artist} - {clean_title}**")
+                        await interaction.followup.send(file=discord.File(dest, os.path.basename(dest)))
+                        try:
+                            os.remove(dest)
+                        except Exception:
+                            pass
+                        return
+
+                    # Too big, clean up and retry with lower quality
+                    os.remove(filepath)
+                    await status.edit(content=f"Best quality too large ({size_mb:.1f}MB), trying lower quality...")
+
+                else:
+                    # Both qualities too big
+                    await status.edit(content=f"Track is too large to upload even at lower quality.")
                     return
-
-                dest = os.path.join(tempfile.gettempdir(), os.path.basename(filepath))
-                shutil.copy2(filepath, dest)
-                await status.edit(content=f"Found: **{clean_artist} - {clean_title}**")
-                await interaction.followup.send(file=discord.File(dest, os.path.basename(dest)))
-
-                try:
-                    os.remove(dest)
-                except Exception:
-                    pass
-                return
 
             except Exception:
                 continue
