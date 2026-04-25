@@ -518,14 +518,14 @@ tree.add_command(random_group)
 # ── Events ────────────────────────────────────────────────────────────────────
 @bot.event
 async def on_ready():
-    guild = discord.Object(id=1434279163346423963)  # Replace with your server's ID
+    guild = discord.Object(id=1434279163346423963)
     tree.copy_global_to(guild=guild)
-    await tree.sync(guild=guild)
+    await tree.sync(guild=guild)  # instant sync for your server
+    await tree.sync()              # global sync for DMs (takes up to 1hr)
     print(f"logged in as {bot.user} ✓", flush=True)
     print(f"mood: {current_mood}", flush=True)
     memory = load_memory()
     print(f"loaded memory for {len(memory)} users", flush=True)
-
 
 @bot.event
 async def on_message(message: discord.Message):
