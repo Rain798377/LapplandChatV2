@@ -95,5 +95,3 @@ def checksum():
 
     if total > 0:
         sys.exit(1)
-
-checksum()
