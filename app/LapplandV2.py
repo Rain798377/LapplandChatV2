@@ -331,22 +331,49 @@ async def download_spotify_track(interaction: discord.Interaction, url: str):
 
     try:
         async with aiohttp.ClientSession() as session:
+            # Try with US country code first
             async with session.get(
                 f"https://api.song.link/v1-alpha.1/links?url={url}&userCountry=US"
             ) as resp:
                 data = await resp.json()
 
-        entity = list(data.get("entitiesByUniqueId", {}).values())[0]
-        track_name = entity.get("title")
-        artist = entity.get("artistName")
+            entities = list(data.get("entitiesByUniqueId", {}).values())
 
-        links_by_platform = data.get("linksByPlatform", {})
-        yt_music = links_by_platform.get("youtubeMusic", {})
-        youtube = links_by_platform.get("youtube", {})
-        yt_url = yt_music.get("url") or youtube.get("url") or None
+            # Retry without country restriction if no results
+            if not entities:
+                async with session.get(
+                    f"https://api.song.link/v1-alpha.1/links?url={url}"
+                ) as resp:
+                    data = await resp.json()
+                entities = list(data.get("entitiesByUniqueId", {}).values())
+
+        if not entities:
+            # Last resort: extract track ID and search Spotify open graph for title
+            await status.edit(content="song.link failed, trying to fetch title from Spotify page...")
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers={"User-Agent": "Mozilla/5.0"}) as resp:
+                    html = await resp.text()
+            og_title = re.search(r'<meta property="og:title" content="([^"]+)"', html)
+            og_desc = re.search(r'<meta name="description" content="([^"]+)"', html)
+            if og_title:
+                track_name = og_title.group(1).split(" - ")[0].strip()
+                artist = og_desc.group(1).split(" · ")[0].strip() if og_desc else ""
+            else:
+                await status.edit(content="Couldn't fetch track info from any source.")
+                return
+            yt_url = None
+        else:
+            entity = entities[0]
+            track_name = entity.get("title")
+            artist = entity.get("artistName", "")
+            links_by_platform = data.get("linksByPlatform", {})
+            yt_music = links_by_platform.get("youtubeMusic", {})
+            youtube = links_by_platform.get("youtube", {})
+            yt_url = yt_music.get("url") or youtube.get("url") or None
 
         if not track_name:
-            raise ValueError("No track info found")
+            await status.edit(content="Couldn't extract track name.")
+            return
 
     except Exception as e:
         await status.edit(content=f"Couldn't fetch track info: `{e}`")
@@ -397,8 +424,7 @@ async def download_spotify_track(interaction: discord.Interaction, url: str):
 
                 dest = os.path.join(tempfile.gettempdir(), os.path.basename(filepath))
                 shutil.copy2(filepath, dest)
-
-                await status.edit(content=f"Found: {label}")
+                await status.edit(content=f"Found: **{clean_artist} - {clean_title}**")
                 await interaction.followup.send(file=discord.File(dest, os.path.basename(dest)))
 
                 try:
