@@ -33,20 +33,20 @@ def update_memory_from_conversation(channel_id: int, user_id: str, display_name:
 
     existing = memory.get(user_id, {}).get("notes", "nothing yet")
 
-    extraction_prompt = f"""Based on this conversation, extract any personal facts, preferences, or notable things about the user '{display_name}' worth remembering long-term (hobbies, opinions, recurring topics, etc).
+    extraction_prompt = f"""Based on this conversation, extract any NEW personal facts, preferences, or notable things about '{display_name}' worth remembering (hobbies, opinions, recurring topics, interests, etc).
 
-Existing notes about them: {existing}
+Existing notes: {existing}
 
 Recent messages:
 {chr(10).join([m['content'] for m in history_snapshot])}
 
-Reply with ONLY an updated one-line summary of notes about {display_name}. If nothing new, reply with the existing notes unchanged. Never include system commentary."""
+Reply with ONLY an updated summary merging old and new info about {display_name}. Keep all existing notes unless they are contradicted. Add any new details. Be concise but don't drop information. Never include system commentary."""
 
     try:
         response = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": extraction_prompt}],
-            max_tokens=100,
+            max_tokens=500,
             temperature=0.3,
         )
         updated_notes = response.choices[0].message.content.strip()
