@@ -16,11 +16,14 @@ import subprocess
 import asyncio
 import re
 import io
+import spotipy
+from spotipy.oauth2 import SpotifyClientCredentials
 
 # ── Config ───────────────────────────────────────────────────────────────────
 DISCORD_TOKEN        = os.environ.get("DISCORD_TOKEN")
 GROQ_API_KEY         = os.environ.get("GROQ_API_KEY")
 SPOTIFY_CLIENT_ID    = os.environ.get("SPOTIFY_CLIENT_ID")
+SPOTIFY_CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET")
 SPOTIFY_REDIRECT_URI = os.environ.get("SPOTIFY_REDIRECT_URI")
 BOT_NAME             = "Lappland"
 REPLY_TO_ALL         = True
@@ -53,6 +56,11 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = discord.Client(intents=intents)
 tree = app_commands.CommandTree(bot)
+
+sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
+    client_id=SPOTIFY_CLIENT_ID,
+    client_secret=SPOTIFY_CLIENT_SECRET
+))
 
 GREETINGS = {"hello", "hi", "hey", "sup", "yo", "hiya", "heya", "howdy", "morning", "evening", "wsp"}
 
@@ -317,29 +325,20 @@ async def download_media(interaction: discord.Interaction, url: str, quality: st
         await interaction.followup.send(f"couldn't download that lol: `{e}`")
 
 async def download_spotify_track(interaction: discord.Interaction, url: str):
-    """Get Spotify track name, then download from YouTube Music"""
     await interaction.followup.send("Detected Spotify link, fetching track info...", wait=True)
 
     try:
-        # Use yt-dlp just to extract the title (no download)
-        ydl_opts = {"quiet": True, "no_warnings": True, "skip_download": True}
-        
-        loop = asyncio.get_event_loop()
-        info = await loop.run_in_executor(None, lambda: _extract_info(ydl_opts, url))
-        
-        track_name = info.get("title") or info.get("track") or None
-        artist = info.get("artist") or info.get("uploader") or ""
-        
-        if not track_name:
-            await interaction.followup.send("Couldn't extract track name from Spotify link.")
-            return
-
-        search_query = f"ytsearch1:{artist} {track_name} audio"
-        await interaction.followup.send(f"Searching YouTube for: **{artist} - {track_name}**...", wait=True)
-
+        # Extract track ID from URL
+        track_id = url.split("/track/")[-1].split("?")[0]
+        track = sp.track(track_id)
+        track_name = track["name"]
+        artist = track["artists"][0]["name"]
     except Exception as e:
-        await interaction.followup.send(f"Couldn't read Spotify metadata: `{e}`")
+        await interaction.followup.send(f"Couldn't fetch Spotify metadata: `{e}`")
         return
+
+    search_query = f"ytsearch1:{artist} {track_name}"
+    await interaction.followup.send(f"Searching YouTube for: **{artist} - {track_name}**...", wait=True)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         try:
@@ -373,7 +372,6 @@ async def download_spotify_track(interaction: discord.Interaction, url: str):
 
             dest = os.path.join(tempfile.gettempdir(), os.path.basename(filepath))
             shutil.copy2(filepath, dest)
-
             await interaction.followup.send(file=discord.File(dest, os.path.basename(dest)))
 
             try:
@@ -383,11 +381,6 @@ async def download_spotify_track(interaction: discord.Interaction, url: str):
 
         except Exception as e:
             await interaction.followup.send(f"YouTube download failed: `{e}`")
-
-
-def _extract_info(opts: dict, url: str) -> dict:
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        return ydl.extract_info(url, download=False)
     
 def _run_ydl(opts: dict, url: str):
     with yt_dlp.YoutubeDL(opts) as ydl:
