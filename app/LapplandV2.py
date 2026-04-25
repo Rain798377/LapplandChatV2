@@ -194,6 +194,20 @@ def add_to_history(channel_id: int, username: str, content: str):
 async def download_media(interaction: discord.Interaction, url: str, quality: str = "auto", audio_only: bool = False):
     await interaction.response.defer(thinking=True)
 
+    # Define your ydl_opts here so it can be reused
+    def get_audio_opts(outtmpl):
+        return {
+            "outtmpl": outtmpl,
+            "quiet": True,
+            "no_warnings": True,
+            "format": "bestaudio/best",
+            "postprocessors": [{
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            }],
+        }
+
     async def attempt_download(height: int) -> str | None:
         """try to download at a given height, return filepath or None if too big"""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -232,18 +246,10 @@ async def download_media(interaction: discord.Interaction, url: str, quality: st
 
     if audio_only:
         with tempfile.TemporaryDirectory() as tmpdir:
-            ydl_opts = {
-                "outtmpl": os.path.join(tmpdir, "%(title).50s.%(ext)s"),
-                "quiet": True,
-                "no_warnings": True,
-                "noplaylist": True,
-                "format": "bestaudio/best",
-                "postprocessors": [{
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": "mp3",
-                    "preferredquality": "192",
-                }],
-            }
+            # Use your ydl_opts configuration here
+            ydl_opts = get_audio_opts(os.path.join(tmpdir, "%(title).50s.%(ext)s"))
+            ydl_opts["noplaylist"] = True  # Add this from your original code
+            
             try:
                 loop = asyncio.get_event_loop()
                 await loop.run_in_executor(None, lambda: _run_ydl(ydl_opts, url))
@@ -265,6 +271,7 @@ async def download_media(interaction: discord.Interaction, url: str, quality: st
             await interaction.followup.send(file=discord.File(filepath, os.path.basename(filepath)))
             return
 
+    # Rest of your code remains the same
     try:
         filepath = None
 
@@ -300,7 +307,6 @@ async def download_media(interaction: discord.Interaction, url: str, quality: st
 def _run_ydl(opts: dict, url: str):
     with yt_dlp.YoutubeDL(opts) as ydl:
         ydl.download([url])
-
 random_group = app_commands.Group(name="random", description="Random commands")
 
 @random_group.command(name="number", description="Returns a random number below a number you choose.")
