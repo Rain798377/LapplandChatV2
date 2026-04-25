@@ -3,6 +3,12 @@ import json
 import random
 import discord
 from groq import Groq
+from discord import app_commands
+import yt_dlp
+import asyncio
+import tempfile
+import glob
+import secrets
 
 # ── Config ───────────────────────────────────────────────────────────────────
 DISCORD_TOKEN    = os.environ.get("DISCORD_TOKEN")
@@ -11,8 +17,9 @@ BOT_NAME         = "Lappland"
 REPLY_TO_ALL     = True
 ALLOWED_CHANNELS = [1483716134250217572]
 MIN_CHARS        = 5
-REPLY_CHANCE     = random.uniform(0.8, 0.9)  # high chance to reply cause boring without interactions, but not 100% to keep it a bit unpredictable and less bot-like
+REPLY_CHANCE     = random.uniform(0.8, 0.9)
 MEMORY_FILE      = "data/memory.json"
+MAX_FILE_SIZE_MB = 25
 # ─────────────────────────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = f"""you are {BOT_NAME}. you're in a discord server. be normal. short replies unless the question needs detail. no asterisks. don't mention being an AI. different people talk in the same channel - pay attention to who said what and treat each person's messages in context of what THEY said, not the whole conversation. Do not be so formal, talk casually. You may use short terms such as lmao, lol, bruh, etc. Make sure it fits the tone of the conversation.
@@ -36,6 +43,7 @@ MAX_HISTORY = 30
 intents = discord.Intents.default()
 intents.message_content = True
 bot = discord.Client(intents=intents)
+tree = app_commands.CommandTree(bot)
 
 GREETINGS = {"hello", "hi", "hey", "sup", "yo", "hiya", "heya", "howdy", "morning", "evening", "wsp"}
 
@@ -56,23 +64,31 @@ def save_memory(memory: dict):
     with open(MEMORY_FILE, "w") as f:
         json.dump(memory, f, indent=2)
 
+# CHANGED: now reads display_name from the nested dict instead of using the key as name
 def get_user_memory_string(memory: dict) -> str:
     if not memory:
         return "none yet"
-    return "\n".join([f"- {username}: {notes}" for username, notes in memory.items()])
+    return "\n".join([f"- {data['display_name']}: {data['notes']}" for data in memory.values()])
 
-def update_memory_from_conversation(channel_id: int, username: str, memory: dict):
+# CHANGED: now takes user_id and display_name separately, keys memory by user_id
+def update_memory_from_conversation(channel_id: int, user_id: str, display_name: str, memory: dict):
     history_snapshot = histories.get(channel_id, [])[-6:]
-    existing = memory.get(username, "nothing yet")
 
-    extraction_prompt = f"""Based on this conversation, extract any personal facts, preferences, or notable things about the user '{username}' worth remembering long-term (hobbies, opinions, recurring topics, etc).
+    if user_id not in memory and display_name in memory: # Migrate old memory.
+        memory[user_id] = memory.pop(display_name)
+        save_memory(memory)
+        print(f"[memory] migrated {display_name} to user_id {user_id}", flush=True)
+
+    existing = memory.get(user_id, {}).get("notes", "nothing yet")  # CHANGED: lookup by user_id, get nested notes
+
+    extraction_prompt = f"""Based on this conversation, extract any personal facts, preferences, or notable things about the user '{display_name}' worth remembering long-term (hobbies, opinions, recurring topics, etc).
 
 Existing notes about them: {existing}
 
 Recent messages:
 {chr(10).join([m['content'] for m in history_snapshot])}
 
-Reply with ONLY an updated one-line summary of notes about {username}. If nothing new, reply with the existing notes unchanged. Never include system commentary."""
+Reply with ONLY an updated one-line summary of notes about {display_name}. If nothing new, reply with the existing notes unchanged. Never include system commentary."""
 
     try:
         response = groq_client.chat.completions.create(
@@ -83,9 +99,10 @@ Reply with ONLY an updated one-line summary of notes about {username}. If nothin
         )
         updated_notes = response.choices[0].message.content.strip()
         if updated_notes:
-            memory[username] = updated_notes
+            # CHANGED: store as nested dict with display_name + notes instead of plain string
+            memory[user_id] = {"display_name": display_name, "notes": updated_notes}
             save_memory(memory)
-            print(f"[memory] updated {username}: {updated_notes}", flush=True)
+            print(f"[memory] updated {display_name} ({user_id}): {updated_notes}", flush=True)  # CHANGED: log both
     except Exception as e:
         print(f"[memory] failed to update: {e}", flush=True)
 
@@ -96,7 +113,7 @@ def maybe_shift_mood():
     mood_message_counter += 1
     if mood_message_counter >= MOOD_SHIFT_EVERY:
         mood_message_counter = 0
-        MOOD_SHIFT_EVERY = random.randint(15, 30)  # re-randomize next threshold
+        MOOD_SHIFT_EVERY = random.randint(15, 30)
         if random.random() < 0.4:
             new_mood = random.choice([m for m in MOODS if m != current_mood])
             print(f"[mood] shifted: {current_mood} → {new_mood}", flush=True)
@@ -118,7 +135,6 @@ def get_ai_response(channel_id: int, user_message: str, username: str, memory: d
     )
 
     response = groq_client.chat.completions.create(
-        # model="llama-3.1-8b-instant", # dumb model
         model="llama-3.3-70b-versatile",
         messages=[{"role": "system", "content": filled_prompt}] + histories[channel_id],
         max_tokens=300,
@@ -138,10 +154,112 @@ def add_to_history(channel_id: int, username: str, content: str):
     if len(histories[channel_id]) > MAX_HISTORY:
         histories[channel_id] = histories[channel_id][-MAX_HISTORY:]
 
+# ── Slash Commands ──────────────────────────────────────────────────────────────
+@tree.command(name="download", description="Download media from a URL")
+@app_commands.describe(
+    url="The link to download from",
+    audio_only="Extract audio only (mp3)"
+)
+async def download_media(interaction: discord.Interaction, url: str, audio_only: bool = False):
+    await interaction.response.defer(thinking=True)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        outtmpl = os.path.join(tmpdir, "%(title).50s.%(ext)s")
+
+        ydl_opts = {
+            "outtmpl": outtmpl,
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+        }
+
+        if audio_only:
+            ydl_opts.update({
+                "format": "bestaudio/best",
+                "postprocessors": [{
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                    "preferredquality": "192",
+                }],
+            })
+        else:
+            ydl_opts["format"] = (
+                "bestvideo[ext=mp4][height<=480]+bestaudio[ext=m4a]"
+                "/bestvideo[height<=480]+bestaudio"
+                "/best[height<=480]"
+                "/best"
+            )
+            ydl_opts["merge_output_format"] = "mp4"
+
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, lambda: _run_ydl(ydl_opts, url))
+        except Exception as e:
+            await interaction.followup.send(f"couldn't download that lol: `{e}`")
+            return
+
+        files = glob.glob(os.path.join(tmpdir, "*"))
+        if not files:
+            await interaction.followup.send("downloaded nothing?? check the url")
+            return
+
+        filepath = files[0]
+        size_mb = os.path.getsize(filepath) / (1024 * 1024)
+
+        if size_mb > MAX_FILE_SIZE_MB:
+            await interaction.followup.send(
+                f"file came out {size_mb:.1f}MB which is over Discord's {MAX_FILE_SIZE_MB}MB limit, can't upload it"
+            )
+            return
+
+        await interaction.followup.send(file=discord.File(filepath, os.path.basename(filepath)))
+
+def _run_ydl(opts: dict, url: str):
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        ydl.download([url])
+
+@tree.command(name="random-number", description="Returns a random number below a number you choose.")
+async def random_number(interaction: discord.Interaction, max_number: int):
+    await interaction.response.send_message(f"Your random number is: {secrets.randbelow(max_number) + 1}")
+
+# CHANGED: added /my-memory command
+@tree.command(name="my-memory", description="Get what the bot remembers about you.")
+@app_commands.describe(format="File format to return (json or txt)")
+@app_commands.choices(format=[
+    app_commands.Choice(name="json", value="json"),
+    app_commands.Choice(name="txt", value="txt"),
+])
+async def my_memory(interaction: discord.Interaction, format: str = "txt"):
+    memory = load_memory()
+    user_id = str(interaction.user.id)  # CHANGED: lookup by user ID not display name
+    entry = memory.get(user_id)
+
+    if not entry:
+        await interaction.response.send_message("i don't have anything on you yet", ephemeral=True)
+        return
+
+    display_name = entry["display_name"]
+    notes = entry["notes"]
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        if format == "json":
+            filepath = os.path.join(tmpdir, f"{display_name}_memory.json")
+            with open(filepath, "w") as f:
+                json.dump({"user_id": user_id, "display_name": display_name, "notes": notes}, f, indent=2)
+        else:
+            filepath = os.path.join(tmpdir, f"{display_name}_memory.txt")
+            with open(filepath, "w") as f:
+                f.write(f"memory log for {display_name}\n\n{notes}")
+
+        await interaction.response.send_message(
+            file=discord.File(filepath, os.path.basename(filepath)),
+            ephemeral=True
+        )
 
 # ── Events ────────────────────────────────────────────────────────────────────
 @bot.event
 async def on_ready():
+    await tree.sync()
     print(f"logged in as {bot.user} ✓", flush=True)
     print(f"mood: {current_mood}", flush=True)
     memory = load_memory()
@@ -178,13 +296,15 @@ async def on_message(message: discord.Message):
             return
         if random.random() > REPLY_CHANCE:
             add_to_history(message.channel.id, message.author.display_name, content)
-            update_memory_from_conversation(message.channel.id, message.author.display_name, memory)
+            # CHANGED: pass user ID and display name separately
+            update_memory_from_conversation(message.channel.id, str(message.author.id), message.author.display_name, memory)
             return
 
     async with message.channel.typing():
         try:
             reply = get_ai_response(message.channel.id, content, message.author.display_name, memory)
-            update_memory_from_conversation(message.channel.id, message.author.display_name, memory)
+            # CHANGED: pass user ID and display name separately
+            update_memory_from_conversation(message.channel.id, str(message.author.id), message.author.display_name, memory)
             await message.reply(reply, mention_author=False)
         except Exception as e:
             print(f"[error] {e}", flush=True)
