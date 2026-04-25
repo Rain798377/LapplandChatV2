@@ -10,17 +10,20 @@ import tempfile
 import glob
 import secrets
 import requests
+import spotify
 
 # ── Config ───────────────────────────────────────────────────────────────────
-DISCORD_TOKEN    = os.environ.get("DISCORD_TOKEN")
-GROQ_API_KEY     = os.environ.get("GROQ_API_KEY")
-BOT_NAME         = "Lappland"
-REPLY_TO_ALL     = True
-ALLOWED_CHANNELS = [1483716134250217572]
-MIN_CHARS        = 5
-REPLY_CHANCE     = random.uniform(0.8, 0.9)
-MEMORY_FILE      = "data/memory.json"
-MAX_FILE_SIZE_MB = 25
+DISCORD_TOKEN        = os.environ.get("DISCORD_TOKEN")
+GROQ_API_KEY         = os.environ.get("GROQ_API_KEY")
+SPOTIFY_CLIENT_ID    = os.environ.get("SPOTIFY_CLIENT_ID")
+SPOTIFY_REDIRECT_URI = os.environ.get("SPOTIFY_REDIRECT_URI")
+BOT_NAME             = "Lappland"
+REPLY_TO_ALL         = True
+ALLOWED_CHANNELS     = [1483716134250217572]
+MIN_CHARS            = 5
+REPLY_CHANCE         = random.uniform(0.8, 0.9)
+MEMORY_FILE          = "../data/memory.json" # data folder outside this folder.
+MAX_FILE_SIZE_MB     = 25
 # ─────────────────────────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = f"""you are {BOT_NAME}. you're in a discord server. be normal. short replies unless the question needs detail. no asterisks. don't mention being an AI. different people talk in the same channel - pay attention to who said what and treat each person's messages in context of what THEY said, not the whole conversation. Do not be so formal, talk casually. You may use short terms such as lmao, lol, bruh, etc. Make sure it fits the tone of the conversation.
@@ -392,6 +395,71 @@ async def my_memory(interaction: discord.Interaction, format: str = "txt"):
 async def ship_users(interaction: discord.Interaction, user1: discord.User, user2: discord.User):
     compatibility = secrets.randbelow(101)  # 0 to 100
     await interaction.response.send_message(f"❤️ {user1.display_name} + {user2.display_name} = {compatibility}% compatible! ❤️")
+
+spotify_group = app_commands.Group(name="spotify", description="Spotify commands")
+
+@spotify_group.command(name="link", description="Link your Spotify account")
+async def spotify_link(interaction: discord.Interaction):
+    user_id = str(interaction.user.id)
+    scope = "user-read-currently-playing user-read-recently-played user-modify-playback-state"
+    url = (
+        f"https://accounts.spotify.com/authorize"
+        f"?client_id={SPOTIFY_CLIENT_ID}"
+        f"&response_type=code"
+        f"&redirect_uri={SPOTIFY_REDIRECT_URI}"
+        f"&scope={requests.utils.quote(scope)}"
+        f"&state={user_id}"  # pass discord user ID through so callback knows who it is
+    )
+    await interaction.response.send_message(
+        f"Click here to link your spotify: {url}", ephemeral=True
+    )
+
+@spotify_group.command(name="now", description="See what you're currently listening to")
+async def spotify_now(interaction: discord.Interaction):
+    user_id = str(interaction.user.id)
+    track = spotify.get_now_playing(user_id)
+    if not track:
+        await interaction.response.send_message("Nothing playing, or you haven't linked your account yet (`/spotify link`)", ephemeral=False)
+        return
+    status = "playing" if track["playing"] else "paused"
+    await interaction.response.send_message(
+        f"🎵 **{track['name']}** by {track['artist']} ({status})\n{track['url']}"
+    )
+
+@spotify_group.command(name="recent", description="See your recently played tracks")
+async def spotify_recent(interaction: discord.Interaction):
+    user_id = str(interaction.user.id)
+    tracks = spotify.get_recent_tracks(user_id)
+    if not tracks:
+        await interaction.response.send_message("Nothing recent, or you haven't linked yet (`/spotify link`)", ephemeral=True)
+        return
+    lines = [f"{i+1}. **{t['name']}** by {t['artist']} — {t['url']}" for i, t in enumerate(tracks)]
+    await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+@spotify_group.command(name="search", description="Search for a track on Spotify")
+@app_commands.describe(query="Track name or artist to search for")
+async def spotify_search(interaction: discord.Interaction, query: str):
+    track = spotify.search_track(query)
+    if not track:
+        await interaction.response.send_message("Couldn't find that", ephemeral=True)
+        return
+    await interaction.response.send_message(f"🎵 **{track['name']}** by {track['artist']}\n{track['url']}")
+
+@spotify_group.command(name="queue", description="Add a track to your Spotify queue")
+@app_commands.describe(query="Track name to search and queue")
+async def spotify_queue(interaction: discord.Interaction, query: str):
+    user_id = str(interaction.user.id)
+    track = spotify.search_track(query)
+    if not track:
+        await interaction.response.send_message("Couldn't find that track", ephemeral=True)
+        return
+    success = spotify.add_to_queue(user_id, track["uri"])
+    if success:
+        await interaction.response.send_message(f"Added **{track['name']}** by {track['artist']} to your queue")
+    else:
+        await interaction.response.send_message("Couldn't add to queue — make sure spotify is open and playing something, and you've linked your account (`/spotify link`)", ephemeral=True)
+
+tree.add_command(spotify_group)
 
 # ── register commands ────────────────────────────────────────────────────────────
 tree.add_command(memory_group)
