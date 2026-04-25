@@ -26,7 +26,7 @@ tree = app_commands.CommandTree(bot)
 download.setup(tree)
 random_cmds.setup(tree)
 memory_cmds.setup(tree)
-misc_cmds.setup(tree)
+misc_cmds.setup(tree, bot)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def is_greeting(text: str) -> bool:
