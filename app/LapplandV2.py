@@ -5,7 +5,7 @@ from discord import app_commands
 
 from config import (DISCORD_TOKEN, ALLOWED_CHANNELS, MIN_CHARS, REPLY_TO_ALL, REPLY_CHANCE, GREETINGS)
 from memory import load_memory, update_memory_from_conversation
-from app.ai import (groq_client, histories, get_ai_response, add_to_history, maybe_shift_mood)
+from ai import (groq_client, histories, get_ai_response, add_to_history, maybe_shift_mood)
 from commands import download, random_cmds, memory_cmds, misc_cmds
 from checksum import checksum
 from colors import *
