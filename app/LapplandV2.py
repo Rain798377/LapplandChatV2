@@ -1,6 +1,6 @@
 import random
 import discord
-import app.ai as ai
+import ai
 from discord import app_commands
 
 from config import (DISCORD_TOKEN, ALLOWED_CHANNELS, MIN_CHARS, REPLY_TO_ALL, REPLY_CHANCE, GREETINGS)

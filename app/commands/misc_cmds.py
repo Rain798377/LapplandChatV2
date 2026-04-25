@@ -6,7 +6,7 @@ import aiohttp
 import discord
 from discord import app_commands
 from PIL import Image, ImageDraw, ImageFont
-from brain import current_mood
+from ai import current_mood
 
 
 def setup(tree: app_commands.CommandTree):
@@ -21,8 +21,8 @@ def setup(tree: app_commands.CommandTree):
 
     @tree.command(name="mood", description="Check the bot's current mood")
     async def check_mood(interaction: discord.Interaction):
-        import brain
-        await interaction.response.send_message(f"I'm currently feeling {brain.current_mood}!")
+        import app.ai as ai
+        await interaction.response.send_message(f"I'm currently feeling {ai.current_mood}!")
 
     @tree.command(name="8ball", description="Ask the magic 8-ball a yes/no question")
     @app_commands.describe(question="Your question for the 8-ball")
