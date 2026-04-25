@@ -631,46 +631,58 @@ async def quote(interaction: discord.Interaction, message: str, author: str, use
 async def make_quote(interaction: discord.Interaction, message: discord.Message):
     await interaction.response.defer()
 
-    # --- Settings ---
     W, H = 1200, 400
-    bg_color = (0, 0, 0)
-    text_color = (255, 255, 255)
-    sub_color = (180, 180, 180)
-
-    img = Image.new("RGB", (W, H), bg_color)
+    img = Image.new("RGB", (W, H), (0, 0, 0))
     draw = ImageDraw.Draw(img)
 
-    # --- Fonts ---
+    # --- Fonts (downloads a clean font automatically) ---
+    import urllib.request
+    font_url = "https://github.com/google/fonts/raw/main/ofl/lato/Lato-Regular.ttf"
+    font_path = "/tmp/Lato-Regular.ttf"
     try:
-        font_main = ImageFont.truetype("arial.ttf", 52)
-        font_sub = ImageFont.truetype("arial.ttf", 28)
+        urllib.request.urlretrieve(font_url, font_path)
+        font_main = ImageFont.truetype(font_path, 56)
+        font_sub = ImageFont.truetype(font_path, 32)
     except:
         font_main = ImageFont.load_default()
         font_sub = ImageFont.load_default()
 
-    # --- Fetch avatar from message author ---
-    avatar_url = message.author.display_avatar.url
+    # --- Avatar ---
+    avatar_url = message.author.display_avatar.with_size(512).url
     async with aiohttp.ClientSession() as session:
         async with session.get(avatar_url) as resp:
             avatar_data = await resp.read()
 
     avatar = Image.open(io.BytesIO(avatar_data)).convert("RGBA").resize((H, H))
 
-    # Fade avatar left to right
+    # Gentler fade (avatar stays more visible)
     fade = Image.new("L", (H, H))
     for x in range(H):
-        alpha = max(0, 255 - int((x / H) * 255))
+        alpha = max(0, 220 - int((x / H) ** 1.5 * 220))  # slower fade curve
         for y in range(H):
             fade.putpixel((x, y), alpha)
     avatar.putalpha(fade)
     img.paste(avatar, (0, 0), avatar)
 
-    # --- Draw text ---
-    text_x = W // 2 + 50
+    # --- Text (properly centered on right half) ---
+    text_x = W // 2 + 80
+    text_y_center = H // 2
+
+    quote_text = message.content or "[no text]"
     author_text = f"- {message.author.display_name}"
 
-    draw.text((text_x, H // 2 - 60), message.content, font=font_main, fill=text_color, anchor="lm")
-    draw.text((text_x, H // 2 + 20), author_text, font=font_sub, fill=sub_color, anchor="lm")
+    # Measure text height to space them properly
+    bbox_main = font_main.getbbox(quote_text)
+    bbox_sub = font_sub.getbbox(author_text)
+    main_h = bbox_main[3] - bbox_main[1]
+    sub_h = bbox_sub[3] - bbox_sub[1]
+
+    gap = 20
+    total_h = main_h + gap + sub_h
+    start_y = text_y_center - total_h // 2
+
+    draw.text((text_x, start_y), quote_text, font=font_main, fill=(255, 255, 255))
+    draw.text((text_x, start_y + main_h + gap), author_text, font=font_sub, fill=(180, 180, 180))
 
     # --- Send ---
     buffer = io.BytesIO()
