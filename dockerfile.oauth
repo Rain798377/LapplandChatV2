@@ -1,5 +1,5 @@
 FROM python:3.11-slim
-WORKDIR /app
+WORKDIR /app/spotify
 COPY oauth_server.py .
 RUN pip install flask requests
 CMD ["python", "oauth_server.py"]
