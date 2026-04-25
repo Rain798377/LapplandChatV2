@@ -30,7 +30,7 @@ A Discord AI chatbot persona powered by [Groq](https://groq.com/) and `llama-3.3
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/yourname/LapplandChatV2
+git clone https://github.com/Rain798377/LapplandChatV2
 cd LapplandChatV2
 pip install discord.py groq yt-dlp aiohttp pillow
 ```
