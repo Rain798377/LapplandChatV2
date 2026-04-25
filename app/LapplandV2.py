@@ -11,6 +11,8 @@ import glob
 import secrets
 import requests
 import spotify
+import shutil
+import subprocess
 
 # ── Config ───────────────────────────────────────────────────────────────────
 DISCORD_TOKEN        = os.environ.get("DISCORD_TOKEN")
@@ -193,7 +195,15 @@ def add_to_history(channel_id: int, username: str, content: str):
 ])
 async def download_media(interaction: discord.Interaction, url: str, quality: str = "auto", audio_only: bool = False):
     await interaction.response.defer(thinking=True)
-
+    
+    # Check if URL is a Spotify link
+    is_spotify = "spotify.com" in url or "open.spotify.com" in url
+    
+    if is_spotify:
+        await download_spotify_track(interaction, url)
+        return
+    
+    # Original code for non-Spotify URLs
     # Define your ydl_opts here so it can be reused
     def get_audio_opts(outtmpl):
         return {
@@ -240,7 +250,6 @@ async def download_media(interaction: discord.Interaction, url: str, quality: st
 
             # copy out of tmpdir before it gets deleted
             dest = os.path.join(tempfile.gettempdir(), os.path.basename(filepath))
-            import shutil
             shutil.copy2(filepath, dest)
             return dest
 
@@ -303,6 +312,54 @@ async def download_media(interaction: discord.Interaction, url: str, quality: st
 
     except Exception as e:
         await interaction.followup.send(f"couldn't download that lol: `{e}`")
+
+async def download_spotify_track(interaction: discord.Interaction, url: str):
+    """Download a track from Spotify using spotdl"""
+    await interaction.followup.send("Detected Spotify link, downloading with spotdl...", wait=True)
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        try:
+            # Use spotdl to download the track
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None, 
+                lambda: subprocess.run(
+                    ["spotdl", url, "--output", tmpdir],
+                    check=True,
+                    capture_output=True,
+                    text=True
+                )
+            )
+            
+            # Find the downloaded file
+            files = glob.glob(os.path.join(tmpdir, "*.mp3"))
+            if not files:
+                await interaction.followup.send("Couldn't find downloaded file from Spotify")
+                return
+                
+            filepath = files[0]
+            size_mb = os.path.getsize(filepath) / (1024 * 1024)
+            
+            if size_mb > MAX_FILE_SIZE_MB:
+                await interaction.followup.send(f"Spotify track is {size_mb:.1f}MB, too big to upload")
+                return
+            
+            # Copy to temp location before cleanup
+            dest = os.path.join(tempfile.gettempdir(), os.path.basename(filepath))
+            shutil.copy2(filepath, dest)
+            
+            await interaction.followup.send(file=discord.File(dest, os.path.basename(dest)))
+            
+            # Cleanup
+            try:
+                os.remove(dest)
+            except Exception:
+                pass
+                
+        except subprocess.CalledProcessError as e:
+            await interaction.followup.send(f"Failed to download from Spotify: {e.stderr}")
+        except Exception as e:
+            await interaction.followup.send(f"Error downloading Spotify track: `{e}`")
 
 def _run_ydl(opts: dict, url: str):
     with yt_dlp.YoutubeDL(opts) as ydl:
