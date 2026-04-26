@@ -17,10 +17,12 @@ FFMPEG_OPTIONS = {
     "options": "-vn",
 }
 
-# Normalization filter using ffmpeg's loudnorm EBU R128 algorithm
+# Normalization filter for real-time streaming.
+# loudnorm (EBU R128) requires a two-pass analysis of the full file — it doesn't work
+# correctly when ffmpeg is streaming PCM to a pipe, producing little or no audible effect.
+# dynaudnorm works frame-by-frame in a single pass, which is correct for piped streaming.
 FFMPEG_OPTIONS_NORMALIZED = {
-    "options": "-vn",
-    "before_options": "-af loudnorm=I=-16:TP=-1.5:LRA=11",
+    "options": "-af dynaudnorm=p=0.9:m=100:s=5",
 }
 
 
@@ -91,7 +93,7 @@ def _build_search_attempts(query: str) -> list[str]:
     """
     Given any query, return a list of progressively simplified searches to try.
     - If it's a URL, return it as-is (no fallbacks needed).
-    - Otherwise, strip it down step by step until something works.
+    - Otherwise, clean noise tags and build fallback attempts.
     """
     if query.startswith("http://") or query.startswith("https://"):
         return [query]
@@ -99,19 +101,36 @@ def _build_search_attempts(query: str) -> list[str]:
     # Unwrap ytsearch prefix so we work with the raw text
     raw = re.sub(r"^ytsearch\d+:", "", query).strip()
 
+    # Strip known noise tags that confuse YouTube search (brackets are treated as
+    # filter syntax, and labels like [Explicit] / (Official Video) add no signal).
+    NOISE_RE = re.compile(
+        r"[\[\(]"
+        r"(?:explicit|clean|official|audio|video|music\s*video|lyric(?:s)?|visualizer|hd|4k|remaster(?:ed)?|feat\.?|ft\.?)"
+        r"[^\]\)]*"
+        r"[\]\)]",
+        re.IGNORECASE,
+    )
+    cleaned = NOISE_RE.sub("", raw).strip()
+    # Also collapse any remaining empty brackets like [] or ()
+    cleaned = re.sub(r"[\[\(]\s*[\]\)]", "", cleaned).strip()
+
     attempts = []
 
-    # 1. Full query — _pick_best_url will handle variant filtering from top 5
-    attempts.append(f"ytsearch5:{raw}")
+    # 1. Cleaned query (noise tags removed) — best signal for YouTube
+    attempts.append(f"ytsearch5:{cleaned}")
 
-    # 2. Strip parentheses/brackets (feat., version tags, etc.)
-    simplified = re.sub(r"[\(\[].*?[\)\]]", "", raw).strip()
-    if simplified and simplified != raw:
-        attempts.append(f"ytsearch5:{simplified}")
+    # 2. Raw original, if different (preserves any bracket content we didn't strip)
+    if raw != cleaned:
+        attempts.append(f"ytsearch5:{raw}")
 
-    # 3. Drop anything after a pipe
-    pipe_segment = re.split(r"\s*\|\s*", simplified or raw)[0].strip()
-    if pipe_segment and pipe_segment != (simplified or raw):
+    # 3. Strip ALL remaining parentheses/brackets as last resort
+    bare = re.sub(r"[\(\[].*?[\)\]]", "", cleaned).strip()
+    if bare and bare != cleaned:
+        attempts.append(f"ytsearch5:{bare}")
+
+    # 4. Drop anything after a pipe
+    pipe_segment = re.split(r"\s*\|\s*", bare or cleaned)[0].strip()
+    if pipe_segment and pipe_segment != (bare or cleaned):
         attempts.append(f"ytsearch5:{pipe_segment}")
 
     # Deduplicate while preserving order
@@ -190,20 +209,58 @@ async def search_and_download_audio(query: str) -> tuple[str, dict] | tuple[None
             return _first_entry(info)
 
     def _pick_best_url(q: str, want_variant: bool) -> str | None:
-        """Fetch top 5 results without downloading, return URL of best match."""
+        """
+        Fetch top 5 results without downloading, return URL of best match.
+        Trusts yt-dlp ranking but skips results that are the wrong variant class
+        or clearly don't contain the song name from the query.
+        """
         opts = {"quiet": True, "no_warnings": True, "noplaylist": True, "extract_flat": True}
-        # Use ytsearch5 to get multiple candidates
         search_q = re.sub(r"^ytsearch\d+:", "ytsearch5:", q)
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(search_q, download=False)
         entries = (info or {}).get("entries") or []
+        if not entries:
+            return None
+
+        # Extract meaningful words from the query to check title relevance.
+        # We care most about the song title words (not artist, not noise).
+        raw_query = re.sub(r"^ytsearch\d+:", "", q).strip().lower()
+        # Remove noise words that appear in YouTube titles but not queries
+        noise = {"official", "audio", "video", "music", "lyrics", "explicit",
+                 "clean", "ft", "feat", "remastered", "hd", "4k", "visualizer"}
+        query_words = [w for w in re.findall(r"\w+", raw_query) if w not in noise]
+
+        def title_score(title: str) -> int:
+            """How many query words appear in this title (case-insensitive)."""
+            t = title.lower()
+            return sum(1 for w in query_words if w in t)
+
+        best_url, best_score = None, -1
         for entry in entries:
             title = entry.get("title") or ""
             is_variant = bool(VARIANT_RE.search(title))
-            if want_variant == is_variant:
-                return entry.get("url") or entry.get("webpage_url")
-        # fallback: return first result regardless
-        return entries[0].get("url") or entries[0].get("webpage_url") if entries else None
+            if want_variant != is_variant:
+                continue
+            score = title_score(title)
+            if score > best_score:
+                best_score = score
+                best_url = entry.get("url") or entry.get("webpage_url")
+
+        if best_url:
+            print(f"[_pick_best_url] best score={best_score}/{len(query_words)}: {best_url}")
+            return best_url
+
+        # No entry matched variant class — fall back to highest-scoring overall
+        best_url, best_score = None, -1
+        for entry in entries:
+            title = entry.get("title") or ""
+            score = title_score(title)
+            if score > best_score:
+                best_score = score
+                best_url = entry.get("url") or entry.get("webpage_url")
+
+        print(f"[_pick_best_url] fallback score={best_score}/{len(query_words)}: {best_url}")
+        return best_url or (entries[0].get("url") or entries[0].get("webpage_url"))
 
     def _make_ydl_opts(outtmpl: str) -> dict:
         return {
@@ -235,8 +292,9 @@ async def search_and_download_audio(query: str) -> tuple[str, dict] | tuple[None
             ydl_opts = _make_ydl_opts(os.path.join(tmpdir, "%(title).50s.%(ext)s"))
 
             try:
-                # For text searches, pick the best result from top 5 before downloading
                 if attempt.startswith("ytsearch"):
+                    # Fast path: peek at the top result first (no download).
+                    # Only re-pick if the top result is a slowed/reverb variant we don't want.
                     best_url = await loop.run_in_executor(None, lambda: _pick_best_url(attempt, want_variant))
                     if not best_url:
                         continue
@@ -353,6 +411,11 @@ async def play_local_file(
     *,
     label: str | None = None,
 ) -> bool:
+    """
+    Play an already-downloaded local mp3 file directly in the voice channel.
+    Updates voice_states and wires up the after-callback to play_next.
+    Returns True if playback started successfully, False otherwise.
+    """
     if not filepath or not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
         print(f"[play_local_file] file missing or empty: {filepath}")
         return False
@@ -369,7 +432,7 @@ async def play_local_file(
     state["last_title"]    = display
 
     vol = state.get("volume", 1.0)
-    normalize = state.get("normalize", False)
+    normalize = meta.get("normalize", False)
     source = discord.PCMVolumeTransformer(
         discord.FFmpegPCMAudio(filepath, **get_ffmpeg_options(normalize)),
         volume=vol,
@@ -432,7 +495,7 @@ async def _retry_failed_track(
         play_next(guild_id, vc, bot)
 
 
-def play_next(guild_id: int, vc: discord.VoiceClient, bot: discord.Client):
+def play_next(guild_id: int, vc: discord.VoiceClient, bot: discord.Client, *, silent: bool = False):
     state = voice_states.get(guild_id)
     if not state:
         return
@@ -445,6 +508,10 @@ def play_next(guild_id: int, vc: discord.VoiceClient, bot: discord.Client):
     state["autoplaying"] = False
 
     if not state["queue"]:
+        # Use asyncio.ensure_future so we get a real asyncio.Task whose .cancel()
+        # injects CancelledError into the coroutine even after it has started sleeping.
+        # run_coroutine_threadsafe returns a concurrent.futures.Future whose .cancel()
+        # only works before the event loop picks it up — useless once the sleep begins.
         task = asyncio.run_coroutine_threadsafe(
             _schedule_autoplay_task(guild_id, vc, bot),
             bot.loop,
@@ -469,7 +536,7 @@ def play_next(guild_id: int, vc: discord.VoiceClient, bot: discord.Client):
     state["last_title"]    = label
 
     vol = state.get("volume", 1.0)
-    normalize = state.get("normalize", False)
+    normalize = meta.get("normalize", False)
     source = discord.PCMVolumeTransformer(
         discord.FFmpegPCMAudio(filepath, **get_ffmpeg_options(normalize)),
         volume=vol
@@ -487,21 +554,28 @@ def play_next(guild_id: int, vc: discord.VoiceClient, bot: discord.Client):
 
     vc.play(source, after=after)
 
-    # Send Now Playing embed to text channel
-    async def _send_now_playing():
-        channel = bot.get_channel(state.get("text_channel_id"))
-        if not channel:
-            return
-        embed, file = await build_now_playing_embed(meta, queued_count=len(state["queue"]))
-        if file:
-            await channel.send(embed=embed, file=file)
-        else:
-            await channel.send(embed=embed)
+    if not silent:
+        # Send Now Playing embed to text channel
+        async def _send_now_playing():
+            channel = bot.get_channel(state.get("text_channel_id"))
+            if not channel:
+                return
+            embed, file = await build_now_playing_embed(meta, queued_count=len(state["queue"]))
+            if file:
+                await channel.send(embed=embed, file=file)
+            else:
+                await channel.send(embed=embed)
 
-    asyncio.run_coroutine_threadsafe(_send_now_playing(), bot.loop)
+        asyncio.run_coroutine_threadsafe(_send_now_playing(), bot.loop)
 
 
 async def _schedule_autoplay_task(guild_id: int, vc: discord.VoiceClient, bot: discord.Client):
+    """
+    Runs on the bot's event loop. Creates a real asyncio.Task for autoplay so that
+    _cancel_autoplay can properly inject CancelledError into a sleeping coroutine.
+    The concurrent.futures.Future returned by run_coroutine_threadsafe can only be
+    cancelled before the event loop starts it — this wrapper solves that.
+    """
     state = voice_states.get(guild_id)
     if not state:
         return

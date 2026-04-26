@@ -308,15 +308,15 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
                 "current_file": None, "current_label": None, "current_meta": None,
                 "last_title": None, "autoplay_task": None,
                 "text_channel_id": interaction.channel_id,
-                "normalize": normalize,
             }
         else:
             voice_states[guild_id]["text_channel_id"] = interaction.channel_id
-            # Only update normalize if explicitly set (non-default) or no current setting
-            if normalize:
-                voice_states[guild_id]["normalize"] = normalize
 
         _cancel_autoplay(guild_id)
+
+        # Snapshot whether something is already playing BEFORE the download so that a
+        # song ending naturally during the (slow) download doesn't change our intent.
+        should_queue = vc.is_playing() or vc.is_paused()
 
         status = await interaction.followup.send("Searching...", wait=True)
 
@@ -339,10 +339,13 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
             await status.edit(content="Couldn't download that track.")
             return
 
+        # Store normalize per-track in meta so it doesn't bleed across the session.
+        meta["normalize"] = normalize
+
         display = meta.get("title") or label
         state   = voice_states[guild_id]
 
-        if vc.is_playing() or vc.is_paused():
+        if should_queue:
             state["queue"].append((filepath, display, meta))
             embed, file = await build_now_playing_embed(meta, queued_count=len(state["queue"]))
             embed.set_footer(text=f"Added to queue • #{len(state['queue'])}")
@@ -352,7 +355,7 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
                 await status.edit(content=None, embed=embed)
         else:
             state["queue"].append((filepath, display, meta))
-            play_next(guild_id, vc, bot)
+            play_next(guild_id, vc, bot, silent=True)
 
             embed, file = await build_now_playing_embed(meta, queued_count=len(state["queue"]))
             if file:
@@ -417,7 +420,7 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
         await interaction.response.send_message("\n".join(lines))
 
 
-    @tree.command(name="clear-queue", description="Clear all queued songs (keeps the current song playing)")
+    @tree.command(name="clearqueue", description="Clear all queued songs (keeps the current song playing)")
     @app_commands.allowed_installs(guilds=True, users=False)
     @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
     async def clearqueue(interaction: discord.Interaction):

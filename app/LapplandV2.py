@@ -14,7 +14,7 @@ from commands import download, random_cmds, memory_cmds, misc_cmds
 from checksum import checksum
 from colors import *
 
-checksum()
+#checksum()
 
 # ── Bot setup ─────────────────────────────────────────────────────────────────
 intents = discord.Intents.default()
