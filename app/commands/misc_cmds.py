@@ -468,7 +468,7 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
     
     # Generate a 5 second sine wave with ffmpeg directly — no yt-dlp involved
         result = subprocess.run([
-            "D:\\LapplandChatV2\\ffmpeg.exe",
+            "ffmpeg",
             "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=5",
             test_file
         ], capture_output=True)
