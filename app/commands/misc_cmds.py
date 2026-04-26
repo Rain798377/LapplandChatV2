@@ -10,7 +10,7 @@ import tempfile
 from mutagen.mp3 import MP3
 from discord import app_commands
 from PIL import Image, ImageDraw, ImageFont
-from .download import _cancel_autoplay, play_next, resolve_spotify_to_query, search_and_download_audio, voice_states, build_now_playing_embed, FFMPEG_OPTIONS, play_local_file
+from .download import _cancel_autoplay, play_next, resolve_spotify_to_query, search_and_download_audio, voice_states, build_now_playing_embed, FFMPEG_OPTIONS, get_ffmpeg_options, play_local_file
 
 OWNER_ID = 955604666689921086
 
@@ -282,8 +282,11 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
     @tree.command(name="play", description="Play a song in your voice channel")
     @app_commands.allowed_installs(guilds=True, users=False)
     @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
-    @app_commands.describe(query="Spotify URL, YouTube URL, or song name")
-    async def play(interaction: discord.Interaction, query: str):
+    @app_commands.describe(
+        query="Spotify URL, YouTube URL, or song name",
+        normalize="Normalize volume levels (EBU R128 loudnorm) — good for music with inconsistent loudness",
+    )
+    async def play(interaction: discord.Interaction, query: str, normalize: bool = False):
         await interaction.response.defer(thinking=True)
 
         if not interaction.user.voice or not interaction.user.voice.channel:
@@ -305,9 +308,13 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
                 "current_file": None, "current_label": None, "current_meta": None,
                 "last_title": None, "autoplay_task": None,
                 "text_channel_id": interaction.channel_id,
+                "normalize": normalize,
             }
         else:
             voice_states[guild_id]["text_channel_id"] = interaction.channel_id
+            # Only update normalize if explicitly set (non-default) or no current setting
+            if normalize:
+                voice_states[guild_id]["normalize"] = normalize
 
         _cancel_autoplay(guild_id)
 
@@ -408,6 +415,30 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
         for i, (_, label, __) in enumerate(state["queue"], 1):
             lines.append(f"{i}. {label}")
         await interaction.response.send_message("\n".join(lines))
+
+
+    @tree.command(name="clear-queue", description="Clear all queued songs (keeps the current song playing)")
+    @app_commands.allowed_installs(guilds=True, users=False)
+    @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
+    async def clearqueue(interaction: discord.Interaction):
+        guild_id = interaction.guild_id
+        state = voice_states.get(guild_id)
+
+        if not state or not state["queue"]:
+            await interaction.response.send_message("The queue is already empty.")
+            return
+
+        count = len(state["queue"])
+        for filepath, _, __ in state["queue"]:
+            try:
+                os.remove(filepath)
+            except Exception:
+                pass
+        state["queue"].clear()
+
+        await interaction.response.send_message(
+            f"Cleared **{count}** song{'s' if count != 1 else ''} from the queue."
+        )
 
     @tree.command(name="pause", description="Pause or resume playback")
     @app_commands.allowed_installs(guilds=True, users=False)

@@ -17,6 +17,17 @@ FFMPEG_OPTIONS = {
     "options": "-vn",
 }
 
+# Normalization filter using ffmpeg's loudnorm EBU R128 algorithm
+FFMPEG_OPTIONS_NORMALIZED = {
+    "options": "-vn",
+    "before_options": "-af loudnorm=I=-16:TP=-1.5:LRA=11",
+}
+
+
+def get_ffmpeg_options(normalize: bool = False) -> dict:
+    """Return the appropriate FFmpeg options based on whether normalization is enabled."""
+    return FFMPEG_OPTIONS_NORMALIZED if normalize else FFMPEG_OPTIONS
+
 AUTOPLAY_QUERIES = [
     "ytsearch1:{title} official audio",
     "ytsearch1:songs like {title}",
@@ -327,6 +338,8 @@ async def resolve_spotify_to_query(url: str) -> tuple[str, str] | tuple[None, No
 def _cancel_autoplay(guild_id: int):
     state = voice_states.get(guild_id)
     if state and state.get("autoplay_task"):
+        # autoplay_task is now always an asyncio.Task (via _schedule_autoplay_task),
+        # so .cancel() correctly injects CancelledError even mid-sleep.
         state["autoplay_task"].cancel()
         state["autoplay_task"] = None
 
@@ -340,11 +353,6 @@ async def play_local_file(
     *,
     label: str | None = None,
 ) -> bool:
-    """
-    Play an already-downloaded local mp3 file directly in the voice channel.
-    Updates voice_states and wires up the after-callback to play_next.
-    Returns True if playback started successfully, False otherwise.
-    """
     if not filepath or not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
         print(f"[play_local_file] file missing or empty: {filepath}")
         return False
@@ -361,8 +369,9 @@ async def play_local_file(
     state["last_title"]    = display
 
     vol = state.get("volume", 1.0)
+    normalize = state.get("normalize", False)
     source = discord.PCMVolumeTransformer(
-        discord.FFmpegPCMAudio(filepath, **FFMPEG_OPTIONS),
+        discord.FFmpegPCMAudio(filepath, **get_ffmpeg_options(normalize)),
         volume=vol,
     )
 
@@ -436,11 +445,11 @@ def play_next(guild_id: int, vc: discord.VoiceClient, bot: discord.Client):
     state["autoplaying"] = False
 
     if not state["queue"]:
-        future = asyncio.run_coroutine_threadsafe(
-            _autoplay_after_delay(guild_id, vc, bot),
-            bot.loop
+        task = asyncio.run_coroutine_threadsafe(
+            _schedule_autoplay_task(guild_id, vc, bot),
+            bot.loop,
         )
-        state["autoplay_task"] = future
+        state["autoplay_task"] = task
         return
 
     _cancel_autoplay(guild_id)
@@ -460,8 +469,9 @@ def play_next(guild_id: int, vc: discord.VoiceClient, bot: discord.Client):
     state["last_title"]    = label
 
     vol = state.get("volume", 1.0)
+    normalize = state.get("normalize", False)
     source = discord.PCMVolumeTransformer(
-        discord.FFmpegPCMAudio(filepath, **FFMPEG_OPTIONS),
+        discord.FFmpegPCMAudio(filepath, **get_ffmpeg_options(normalize)),
         volume=vol
     )
 
@@ -489,6 +499,18 @@ def play_next(guild_id: int, vc: discord.VoiceClient, bot: discord.Client):
             await channel.send(embed=embed)
 
     asyncio.run_coroutine_threadsafe(_send_now_playing(), bot.loop)
+
+
+async def _schedule_autoplay_task(guild_id: int, vc: discord.VoiceClient, bot: discord.Client):
+    state = voice_states.get(guild_id)
+    if not state:
+        return
+    task = asyncio.ensure_future(_autoplay_after_delay(guild_id, vc, bot))
+    state["autoplay_task"] = task
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 
 async def _autoplay_after_delay(guild_id: int, vc: discord.VoiceClient, bot: discord.Client):
@@ -528,8 +550,9 @@ async def _autoplay_after_delay(guild_id: int, vc: discord.VoiceClient, bot: dis
         state["last_title"]    = resolved_title
 
         vol = state.get("volume", 1.0)
+        normalize = state.get("normalize", False)
         source = discord.PCMVolumeTransformer(
-            discord.FFmpegPCMAudio(filepath, **FFMPEG_OPTIONS),
+            discord.FFmpegPCMAudio(filepath, **get_ffmpeg_options(normalize)),
             volume=vol
         )
 
