@@ -387,11 +387,8 @@ async def search_and_download_audio(query: str) -> tuple[str, dict] | tuple[None
             return _first_entry(info)
 
     def _pick_best_url(q: str, want_variant: bool) -> str | None:
-        """
-        Fetch top 5 results without downloading, return URL of best match.
-        Trusts yt-dlp ranking but skips results that are the wrong variant class
-        or clearly don't contain the song name from the query.
-        """
+
+        MAX_DURATION_SECONDS = 30 * 60  # 30 minutes
         opts = {"quiet": True, "no_warnings": True, "noplaylist": True, "extract_flat": True}
         search_q = re.sub(r"^ytsearch\d+:", "ytsearch5:", q)
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -400,22 +397,21 @@ async def search_and_download_audio(query: str) -> tuple[str, dict] | tuple[None
         if not entries:
             return None
 
-        # Extract meaningful words from the query to check title relevance.
-        # We care most about the song title words (not artist, not noise).
         raw_query = re.sub(r"^ytsearch\d+:", "", q).strip().lower()
-        # Remove noise words that appear in YouTube titles but not queries
         noise = {"official", "audio", "video", "music", "lyrics", "explicit",
-                 "clean", "ft", "feat", "remastered", "hd", "4k", "visualizer"}
+                "clean", "ft", "feat", "remastered", "hd", "4k", "visualizer"}
         query_words = [w for w in re.findall(r"\w+", raw_query) if w not in noise]
 
         def title_score(title: str) -> int:
-            """How many query words appear in this title (case-insensitive)."""
             t = title.lower()
             return sum(1 for w in query_words if w in t)
 
         best_url, best_score = None, -1
         for entry in entries:
             title = entry.get("title") or ""
+            duration = entry.get("duration") or 0
+            if duration and duration > MAX_DURATION_SECONDS:
+                continue  # skip long videos
             is_variant = bool(VARIANT_RE.search(title))
             if want_variant != is_variant:
                 continue
@@ -432,6 +428,9 @@ async def search_and_download_audio(query: str) -> tuple[str, dict] | tuple[None
         best_url, best_score = None, -1
         for entry in entries:
             title = entry.get("title") or ""
+            duration = entry.get("duration") or 0
+            if duration and duration > MAX_DURATION_SECONDS:
+                continue  # still enforce duration in fallback
             score = title_score(title)
             if score > best_score:
                 best_score = score
@@ -449,6 +448,7 @@ async def search_and_download_audio(query: str) -> tuple[str, dict] | tuple[None
             "playlist_items": "1",
             "format": "bestaudio/best",
             "writethumbnail": True,
+            "match_filter": yt_dlp.utils.match_filter_func("duration <= 1800"),
             "postprocessors": [
                 {
                     "key": "FFmpegExtractAudio",
