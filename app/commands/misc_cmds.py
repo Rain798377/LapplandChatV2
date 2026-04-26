@@ -10,7 +10,12 @@ import tempfile
 from mutagen.mp3 import MP3
 from discord import app_commands
 from PIL import Image, ImageDraw, ImageFont
-from .download import _cancel_autoplay, play_next, resolve_spotify_to_query, search_and_download_audio, voice_states, build_now_playing_embed, FFMPEG_OPTIONS, get_ffmpeg_options, play_local_file
+from .download import (
+    _cancel_autoplay, play_next, resolve_spotify_to_query, resolve_apple_music_to_query,
+    resolve_playlist_tracks, search_and_download_audio, voice_states, build_now_playing_embed,
+    FFMPEG_OPTIONS, get_ffmpeg_options, play_local_file,
+    _is_spotify_url, _is_apple_music_url, _is_youtube_url, _is_soundcloud_url, _is_playlist_url,
+)
 
 OWNER_ID = 955604666689921086
 
@@ -279,12 +284,12 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
         return embed, file
 
 
-    @tree.command(name="play", description="Play a song in your voice channel")
+    @tree.command(name="play", description="Play a song or playlist in your voice channel")
     @app_commands.allowed_installs(guilds=True, users=False)
     @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
     @app_commands.describe(
-        query="Spotify URL, YouTube URL, or song name",
-        normalize="Normalize volume levels (EBU R128 loudnorm) — good for music with inconsistent loudness",
+        query="Spotify, Apple Music, YouTube, SoundCloud URL — or just a song name",
+        normalize="Normalize volume levels — good for music with inconsistent loudness",
     )
     async def play(interaction: discord.Interaction, query: str, normalize: bool = False):
         await interaction.response.defer(thinking=True)
@@ -293,8 +298,8 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
             await interaction.followup.send("You need to be in a voice channel first.")
             return
 
-        channel   = interaction.user.voice.channel
-        guild_id  = interaction.guild_id
+        channel  = interaction.user.voice.channel
+        guild_id = interaction.guild_id
 
         vc = interaction.guild.voice_client
         if vc is None:
@@ -313,22 +318,80 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
             voice_states[guild_id]["text_channel_id"] = interaction.channel_id
 
         _cancel_autoplay(guild_id)
-
-        # Snapshot whether something is already playing BEFORE the download so that a
-        # song ending naturally during the (slow) download doesn't change our intent.
         should_queue = vc.is_playing() or vc.is_paused()
-
         status = await interaction.followup.send("Searching...", wait=True)
 
-        if "spotify.com" in query:
+        # ── Playlist / multi-track URLs ───────────────────────────────────────
+        if _is_playlist_url(query):
+            await status.edit(content="Fetching playlist...")
+            tracks = await resolve_playlist_tracks(query)
+            if not tracks:
+                await status.edit(content="Couldn't resolve that playlist. Try a direct song URL or search.")
+                return
+
+            await status.edit(content=f"Found **{len(tracks)} tracks** — queuing...")
+
+            queued = 0
+            first_meta = None
+            state = voice_states[guild_id]
+
+            for i, (track_query, track_label) in enumerate(tracks):
+                filepath, meta = await search_and_download_audio(track_query)
+                if not filepath:
+                    print(f"[playlist] skipping '{track_label}': download failed")
+                    continue
+                meta["normalize"] = normalize
+                display = meta.get("title") or track_label
+                state["queue"].append((filepath, display, meta))
+                if first_meta is None:
+                    first_meta = meta
+                queued += 1
+                # Update status every 5 tracks so the user can see progress
+                if queued % 5 == 0 or i == len(tracks) - 1:
+                    await status.edit(content=f"Queuing playlist… {queued}/{len(tracks)} tracks loaded")
+
+            if queued == 0:
+                await status.edit(content="Couldn't download any tracks from that playlist.")
+                return
+
+            # Start playback if nothing was playing
+            if not should_queue and not vc.is_playing():
+                play_next(guild_id, vc, bot, silent=True)
+
+            source_label = "Spotify" if _is_spotify_url(query) else \
+                           "Apple Music" if _is_apple_music_url(query) else \
+                           "SoundCloud" if _is_soundcloud_url(query) else "YouTube"
+            embed, art = await build_now_playing_embed(first_meta or {}, queued_count=len(state["queue"]))
+            embed.set_footer(text=f"Queued {queued} tracks from {source_label} playlist")
+            if art:
+                await status.edit(content=None, embed=embed, attachments=[art])
+            else:
+                await status.edit(content=None, embed=embed)
+            return
+
+        # ── Single track ──────────────────────────────────────────────────────
+        if _is_spotify_url(query):
             search_query, label = await resolve_spotify_to_query(query)
             if not search_query:
                 await status.edit(content="Couldn't resolve that Spotify link.")
                 return
             await status.edit(content=f"Found **{label}** on Spotify, downloading...")
-        elif "youtube.com" in query or "youtu.be" in query:
+
+        elif _is_apple_music_url(query):
+            search_query, label = await resolve_apple_music_to_query(query)
+            if not search_query:
+                await status.edit(content="Couldn't resolve that Apple Music link.")
+                return
+            await status.edit(content=f"Found **{label}** on Apple Music, downloading...")
+
+        elif _is_youtube_url(query):
             search_query, label = query, query
             await status.edit(content="Downloading from YouTube...")
+
+        elif _is_soundcloud_url(query):
+            search_query, label = query, query
+            await status.edit(content="Downloading from SoundCloud...")
+
         else:
             search_query = f"ytsearch1:{query}"
             label = query
@@ -339,9 +402,7 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
             await status.edit(content="Couldn't download that track.")
             return
 
-        # Store normalize per-track in meta so it doesn't bleed across the session.
         meta["normalize"] = normalize
-
         display = meta.get("title") or label
         state   = voice_states[guild_id]
 
@@ -356,7 +417,6 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
         else:
             state["queue"].append((filepath, display, meta))
             play_next(guild_id, vc, bot, silent=True)
-
             embed, file = await build_now_playing_embed(meta, queued_count=len(state["queue"]))
             if file:
                 await status.edit(content=None, embed=embed, attachments=[file])

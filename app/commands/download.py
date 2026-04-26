@@ -9,8 +9,9 @@ import aiohttp
 import yt_dlp
 import discord
 import random
+import time
 from discord import app_commands
-from config import MAX_FILE_SIZE_MB, AUTOPLAY_DELAY
+from config import MAX_FILE_SIZE_MB, AUTOPLAY_DELAY, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET
 
 
 FFMPEG_OPTIONS = {
@@ -24,6 +25,37 @@ FFMPEG_OPTIONS = {
 FFMPEG_OPTIONS_NORMALIZED = {
     "options": "-af dynaudnorm=p=0.9:m=100:s=5",
 }
+
+# ── Spotify API ───────────────────────────────────────────────────────────────
+
+_spotify_token: str | None = None
+_spotify_token_expiry: float = 0
+
+
+async def _get_spotify_token(client_id: str, client_secret: str) -> str | None:
+    """Fetch a client-credentials token, reusing it until it expires."""
+    global _spotify_token, _spotify_token_expiry
+    if _spotify_token and time.monotonic() < _spotify_token_expiry:
+        return _spotify_token
+    try:
+        import base64
+        credentials = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://accounts.spotify.com/api/token",
+                headers={"Authorization": f"Basic {credentials}"},
+                data={"grant_type": "client_credentials"},
+            ) as resp:
+                data = await resp.json()
+        _spotify_token = data.get("access_token")
+        expires_in = data.get("expires_in", 3600)
+        _spotify_token_expiry = time.monotonic() + expires_in - 60  # 60s safety margin
+        print(f"[spotify_token] fetched new token, expires in {expires_in}s")
+        return _spotify_token
+    except Exception as e:
+        print(f"[spotify_token] failed to fetch token: {e}")
+        return None
+
 
 
 def get_ffmpeg_options(normalize: bool = False) -> dict:
@@ -105,7 +137,7 @@ def _build_search_attempts(query: str) -> list[str]:
     # filter syntax, and labels like [Explicit] / (Official Video) add no signal).
     NOISE_RE = re.compile(
         r"[\[\(]"
-        r"(?:explicit|clean|official|audio|video|music\s*video|lyric(?:s)?|visualizer|hd|4k|remaster(?:ed)?|feat\.?|ft\.?)"
+        r"(?:explicit|clean|official|audio|video|music\s*video|mv|lyric(?:s)?|visualizer|hd|4k|remaster(?:ed)?|feat\.?|ft\.?)"
         r"[^\]\)]*"
         r"[\]\)]",
         re.IGNORECASE,
@@ -360,6 +392,141 @@ async def search_and_download_audio(query: str) -> tuple[str, dict] | tuple[None
 # ── Spotify resolution ────────────────────────────────────────────────────────
 
 async def resolve_spotify_to_query(url: str) -> tuple[str, str] | tuple[None, None]:
+
+    artist, title, label = "", "", ""
+
+    # ── 1. Spotify Web API — metadata only ───────────────────────────────────
+    try:
+        match = re.search(r"spotify\.com/track/([A-Za-z0-9]+)", url)
+        if match:
+            track_id = match.group(1)
+            token = await _get_spotify_token(SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET)
+            if token:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        f"https://api.spotify.com/v1/tracks/{track_id}",
+                        headers={"Authorization": f"Bearer {token}"},
+                    ) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            title   = data.get("name", "").strip()
+                            artists = [a["name"] for a in data.get("artists", [])]
+                            artist  = ", ".join(artists).strip()
+                            label   = f"{artist} - {title}" if artist else title
+                            print(f"[resolve_spotify] Spotify API ok — artist={artist!r} title={title!r}")
+                        else:
+                            text = await resp.text()
+                            print(f"[resolve_spotify] Spotify API {resp.status}: {text[:200]}")
+    except Exception as e:
+        print(f"[resolve_spotify] Spotify API failed: {e}")
+
+    # ── 2. song.link — platform URL + metadata fallback ──────────────────────
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"https://api.song.link/v1-alpha.1/links?url={url}&userCountry=US"
+            ) as resp:
+                sl_data = await resp.json()
+
+        entities = list(sl_data.get("entitiesByUniqueId", {}).values())
+        links    = sl_data.get("linksByPlatform", {})
+
+        if entities and not label:
+            # Only use song.link metadata if Spotify API didn't give us anything
+            entity = entities[0]
+            artist = entity.get("artistName", "").strip()
+            title  = entity.get("title", "").strip()
+            label  = f"{artist} - {title}" if artist else title
+            print(f"[resolve_spotify] song.link metadata — artist={artist!r} title={title!r}")
+        elif entities:
+            print(f"[resolve_spotify] song.link ok — using Spotify API metadata, checking platform URLs")
+
+        platform_priority = ["soundcloud", "youtubeMusic", "youtube"]
+        for platform in platform_priority:
+            platform_url = links.get(platform, {}).get("url")
+            if platform_url:
+                print(f"[resolve_spotify] using platform={platform!r} url={platform_url!r}")
+                return platform_url, label
+
+        if label:
+            print(f"[resolve_spotify] no platform URL found, falling back to search")
+            return f"ytsearch1:{label}", label
+
+    except Exception as e:
+        print(f"[resolve_spotify] song.link failed: {e}")
+
+    # ── 3. Scrape Spotify og tags ─────────────────────────────────────────────
+    if label:
+        # Spotify API gave us metadata but song.link failed entirely — use what we have
+        print(f"[resolve_spotify] song.link failed but have metadata, falling back to search")
+        return f"ytsearch1:{label}", label
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                url,
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                html = await resp.text()
+
+        og_title = re.search(r'<meta property="og:title" content="([^"]+)"', html)
+        og_desc  = re.search(r'<meta name="description" content="([^"]+)"', html)
+
+        if og_title:
+            raw_title = og_title.group(1).strip()
+            raw_title = re.sub(r"(?i)^listen to (.+) on spotify$", r"\1", raw_title).strip()
+            artist = ""
+            if og_desc:
+                parts = [p.strip() for p in og_desc.group(1).split("·")]
+                if parts:
+                    artist = parts[0]
+            if " - " in raw_title:
+                label = raw_title
+            elif artist:
+                label = f"{artist} - {raw_title}"
+            else:
+                label = raw_title
+
+            print(f"[resolve_spotify] scraped og tags — label={label!r}")
+            return f"ytsearch1:{label}", label
+
+    except Exception as e:
+        print(f"[resolve_spotify] og scrape failed: {e}")
+
+    print(f"[resolve_spotify] all resolution attempts failed for {url}")
+    return None, None
+
+
+# ── Playlist / multi-track resolution ────────────────────────────────────────
+
+def _is_spotify_url(url: str) -> bool:
+    return "spotify.com" in url or "open.spotify.com" in url
+
+def _is_apple_music_url(url: str) -> bool:
+    return "music.apple.com" in url
+
+def _is_youtube_url(url: str) -> bool:
+    return "youtube.com" in url or "youtu.be" in url
+
+def _is_soundcloud_url(url: str) -> bool:
+    return "soundcloud.com" in url
+
+def _is_playlist_url(url: str) -> bool:
+    """Return True if the URL looks like a playlist/album rather than a single track."""
+    if _is_youtube_url(url):
+        return "list=" in url and "watch?v=" not in url
+    if _is_spotify_url(url):
+        return "/playlist/" in url or "/album/" in url
+    if _is_apple_music_url(url):
+        return "/playlist/" in url or "/album/" in url
+    if _is_soundcloud_url(url):
+        return "/sets/" in url
+    return False
+
+
+async def resolve_apple_music_to_query(url: str) -> tuple[str, str] | tuple[None, None]:
+    """Resolve an Apple Music track URL to a YouTube search query via song.link."""
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
@@ -377,18 +544,180 @@ async def resolve_spotify_to_query(url: str) -> tuple[str, str] | tuple[None, No
             yt_url = links.get("youtubeMusic", {}).get("url") or links.get("youtube", {}).get("url")
             return yt_url or f"ytsearch1:{artist} {title}", f"{artist} - {title}"
 
+        # Fallback: scrape og tags
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers={"User-Agent": "Mozilla/5.0"}) as resp:
                 html = await resp.text()
         og_title = re.search(r'<meta property="og:title" content="([^"]+)"', html)
         if og_title:
-            raw = re.sub(r"(?i)listen to (.+) on spotify", r"\1", og_title.group(1)).strip()
+            raw = og_title.group(1).strip()
             return f"ytsearch1:{raw}", raw
 
     except Exception:
         pass
 
     return None, None
+
+
+async def resolve_playlist_tracks(url: str) -> list[tuple[str, str]] | None:
+    """
+    Resolve a playlist/album URL to a list of (search_query, label) tuples.
+    Returns None if the URL is not a recognised playlist type or resolution fails.
+    Supports: Spotify playlists/albums, Apple Music playlists/albums,
+              YouTube playlists, SoundCloud sets.
+    """
+
+    # ── YouTube playlist ──────────────────────────────────────────────────────
+    if _is_youtube_url(url):
+        def _yt_extract():
+            opts = {
+                "quiet": True,
+                "no_warnings": True,
+                "extract_flat": True,
+                "skip_download": True,
+            }
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                return ydl.extract_info(url, download=False)
+
+        loop = asyncio.get_event_loop()
+        try:
+            info = await loop.run_in_executor(None, _yt_extract)
+        except Exception as e:
+            print(f"[resolve_playlist_tracks] YouTube error: {e}")
+            return None
+
+        entries = (info or {}).get("entries") or []
+        tracks = []
+        for entry in entries:
+            if not entry:
+                continue
+            entry_url = entry.get("url") or entry.get("webpage_url") or entry.get("id")
+            if entry.get("id") and not entry_url.startswith("http"):
+                entry_url = f"https://www.youtube.com/watch?v={entry['id']}"
+            title = entry.get("title") or entry_url
+            if entry_url:
+                tracks.append((entry_url, title))
+        return tracks or None
+
+    # ── SoundCloud set ────────────────────────────────────────────────────────
+    if _is_soundcloud_url(url):
+        def _sc_extract():
+            opts = {
+                "quiet": True,
+                "no_warnings": True,
+                "extract_flat": True,
+                "skip_download": True,
+            }
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                return ydl.extract_info(url, download=False)
+
+        loop = asyncio.get_event_loop()
+        try:
+            info = await loop.run_in_executor(None, _sc_extract)
+        except Exception as e:
+            print(f"[resolve_playlist_tracks] SoundCloud error: {e}")
+            return None
+
+        entries = (info or {}).get("entries") or []
+        tracks = []
+        for entry in entries:
+            if not entry:
+                continue
+            entry_url = entry.get("url") or entry.get("webpage_url")
+            title = entry.get("title") or entry_url
+            if entry_url:
+                tracks.append((entry_url, title))
+        return tracks or None
+
+    # ── Spotify or Apple Music playlist/album ─────────────────────────────────
+    if _is_spotify_url(url) or _is_apple_music_url(url):
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"https://api.song.link/v1-alpha.1/links?url={url}&userCountry=US"
+                ) as resp:
+                    data = await resp.json()
+
+            # song.link only resolves single tracks; for playlists we scrape the page
+            # to get the track listing then resolve each via search.
+            # Fall through to scraping below.
+        except Exception:
+            pass
+
+        # Scrape the Spotify/Apple Music page for track titles
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers={"User-Agent": "Mozilla/5.0"}) as resp:
+                    html = await resp.text()
+        except Exception as e:
+            print(f"[resolve_playlist_tracks] scrape error: {e}")
+            return None
+
+        tracks = []
+
+        if _is_spotify_url(url):
+            # Spotify embeds track data as JSON in a <script id="__NEXT_DATA__"> tag
+            next_data = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
+            if next_data:
+                import json
+                try:
+                    obj = json.loads(next_data.group(1))
+                    # Navigate to the track list — structure varies by playlist vs album
+                    page_props = obj.get("props", {}).get("pageProps", {})
+                    state = page_props.get("state", {})
+                    entities = state.get("data", {}).get("entity", {})
+                    items = (
+                        entities.get("trackList")          # albums
+                        or entities.get("tracks", {}).get("items", [])  # playlists
+                        or []
+                    )
+                    for item in items:
+                        track = item.get("track") or item  # playlists wrap in {track: ...}
+                        t_name   = track.get("name") or track.get("title") or ""
+                        artists  = track.get("artists") or track.get("artistsWithRoles") or []
+                        if isinstance(artists, list) and artists:
+                            artist_name = artists[0].get("profile", {}).get("name") or artists[0].get("name") or ""
+                        else:
+                            artist_name = ""
+                        if t_name:
+                            label = f"{artist_name} - {t_name}" if artist_name else t_name
+                            query = f"ytsearch1:{artist_name} {t_name}".strip()
+                            tracks.append((query, label))
+                except Exception as e:
+                    print(f"[resolve_playlist_tracks] Spotify JSON parse error: {e}")
+
+            if not tracks:
+                # Fallback: og:title often contains "Artist · Song" patterns on album pages
+                og_titles = re.findall(r'"name"\s*:\s*"([^"]+)"', html)
+                for t in og_titles[:50]:
+                    tracks.append((f"ytsearch1:{t}", t))
+
+        elif _is_apple_music_url(url):
+            # Apple Music embeds structured data as JSON-LD
+            json_ld = re.search(r'<script type="application/ld\+json">(.*?)</script>', html, re.DOTALL)
+            if json_ld:
+                import json
+                try:
+                    obj = json.loads(json_ld.group(1))
+                    items = obj.get("track") or obj.get("tracks") or []
+                    for item in items:
+                        t_name = item.get("name") or ""
+                        artist_name = ""
+                        by_artist = item.get("byArtist")
+                        if isinstance(by_artist, dict):
+                            artist_name = by_artist.get("name") or ""
+                        elif isinstance(by_artist, list) and by_artist:
+                            artist_name = by_artist[0].get("name") or ""
+                        if t_name:
+                            label = f"{artist_name} - {t_name}" if artist_name else t_name
+                            query = f"ytsearch1:{artist_name} {t_name}".strip()
+                            tracks.append((query, label))
+                except Exception as e:
+                    print(f"[resolve_playlist_tracks] Apple Music JSON-LD parse error: {e}")
+
+        return tracks or None
+
+    return None
 
 
 # ── Voice playback ────────────────────────────────────────────────────────────
