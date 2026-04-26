@@ -225,25 +225,82 @@ async def build_now_playing_embed(
         h, m = divmod(m, 60)
         return f"{h}:{m:02}:{s:02}" if h else f"{m}:{s:02}"
 
-    def _normalize(s: str) -> str:
-        """Lowercase, strip punctuation/parens for fuzzy comparison."""
+    def _normalize_str(s: str) -> str:
         s = s.lower()
-        s = re.sub(r"\(.*?\)|\[.*?\]", "", s)          # strip (Official Audio) etc.
+        s = re.sub(r"\(.*?\)|\[.*?\]", "", s)
         s = re.sub(r"[^a-z0-9\s]", "", s)
         return s.strip()
 
     def _matches(sp_meta: dict, dl_meta: dict) -> bool:
-        """True if Spotify metadata is a reasonable match for what was downloaded."""
-        sp_title  = _normalize(sp_meta.get("title", ""))
-        sp_artist = _normalize(sp_meta.get("artist", ""))
-        dl_title  = _normalize(dl_meta.get("title", ""))
-        dl_artist = _normalize(dl_meta.get("artist", ""))
+        sp_title  = _normalize_str(sp_meta.get("title", ""))
+        sp_artist = _normalize_str(sp_meta.get("artist", ""))
+        dl_title  = _normalize_str(dl_meta.get("title", ""))
+        dl_artist = _normalize_str(dl_meta.get("artist", ""))
         title_ok  = sp_title and (sp_title in dl_title or dl_title in sp_title)
         artist_ok = sp_artist and any(
             a.strip() in dl_artist or dl_artist in a.strip()
             for a in sp_artist.split(",")
         )
-        return title_ok or artist_ok  # one match is enough — avoids false negatives
+        return title_ok or artist_ok
+
+    def _build_composite(img_bytes: bytes) -> bytes:
+        """
+        Composite: blurred + desaturated background, sharp centered foreground.
+        Returns PNG bytes.
+        """
+        from PIL import Image, ImageFilter, ImageEnhance
+        import io as _io
+
+        W, H = 1280, 720  # 16:9 canvas
+
+        src = Image.open(_io.BytesIO(img_bytes)).convert("RGB")
+
+        # ── Background: scale to fill, blur, desaturate ───────────────────────
+        bg_scale = max(W / src.width, H / src.height)
+        bg = src.resize(
+            (int(src.width * bg_scale), int(src.height * bg_scale)),
+            Image.LANCZOS,
+        )
+        # Center-crop to canvas
+        bx = (bg.width  - W) // 2
+        by = (bg.height - H) // 2
+        bg = bg.crop((bx, by, bx + W, by + H))
+        # Heavy blur
+        bg = bg.filter(ImageFilter.GaussianBlur(radius=7)) # default 28
+        # Desaturate (pull toward gray) — keep a touch of color like the screenshot
+        bg = ImageEnhance.Color(bg).enhance(0.35)
+        # Darken slightly so the foreground pops
+        bg = ImageEnhance.Brightness(bg).enhance(0.6)
+
+        # ── Foreground: fit inside center box, sharp ──────────────────────────
+        box_h = int(H * 0.82)  # foreground takes ~82% of height
+        scale = box_h / src.height
+        fg_w  = int(src.width * scale)
+        fg_h  = box_h
+        fg = src.resize((fg_w, fg_h), Image.LANCZOS)
+
+        # Paste centered
+        px = (W - fg_w) // 2
+        py = (H - fg_h) // 2
+        bg.paste(fg, (px, py))
+
+        out = _io.BytesIO()
+        bg.save(out, format="PNG")
+        return out.getvalue()
+
+    async def _get_image_bytes(thumbnail) -> bytes | None:
+        """Resolve thumbnail to raw bytes — handles both bytes and URL string."""
+        if isinstance(thumbnail, bytes):
+            return thumbnail
+        if isinstance(thumbnail, str) and thumbnail.startswith("http"):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(thumbnail, timeout=aiohttp.ClientTimeout(total=8)) as r:
+                        if r.status == 200:
+                            return await r.read()
+            except Exception as e:
+                print(f"[embed] thumbnail fetch failed: {e}")
+        return None
 
     # ── Try to enrich with Spotify metadata ──────────────────────────────────
     spotify_meta = None
@@ -252,10 +309,10 @@ async def build_now_playing_embed(
         if spotify_meta:
             if _matches(spotify_meta, meta):
                 print(f"[embed] Spotify metadata matched — using Spotify cover art")
-                meta = {**meta, **spotify_meta}  # Spotify wins on all fields
+                meta = {**meta, **spotify_meta}
             else:
-                print(f"[embed] Spotify metadata did NOT match downloaded track — using YT metadata")
-                spotify_meta = None  # discard, fall through to YT thumbnail
+                print(f"[embed] Spotify metadata did NOT match — using YT metadata")
+                spotify_meta = None
 
     title     = meta.get("title")    or "Unknown Title"
     artist    = meta.get("artist")   or "Unknown Artist"
@@ -264,32 +321,39 @@ async def build_now_playing_embed(
     thumbnail = meta.get("thumbnail")
 
     embed = discord.Embed(color=0x1DB954)
-
-    # ── Large image ───────────────────────────────────────────────────────────
-    file = None
-    if isinstance(thumbnail, bytes):
-        file = discord.File(io.BytesIO(thumbnail), filename="cover.png")
-        embed.set_image(url="attachment://cover.png")
-    elif isinstance(thumbnail, str) and thumbnail.startswith("http"):
-        embed.set_image(url=thumbnail)
-
     embed.title = title
     embed.add_field(name="Artist",   value=artist,                 inline=True)
     embed.add_field(name="Duration", value=fmt_duration(duration), inline=True)
-
     if album:
         embed.add_field(name="Album", value=album, inline=True)
-
     if queued_count:
         embed.add_field(
             name="Up next",
             value=f"{queued_count} song{'s' if queued_count != 1 else ''}",
             inline=True,
         )
-
     embed.set_footer(text="Now Playing")
-    return embed, file
 
+    # ── Build composite image ─────────────────────────────────────────────────
+    file = None
+    img_bytes = await _get_image_bytes(thumbnail)
+    if img_bytes:
+        try:
+            composite = await asyncio.get_event_loop().run_in_executor(
+                None, _build_composite, img_bytes
+            )
+            file = discord.File(io.BytesIO(composite), filename="cover.png")
+            embed.set_image(url="attachment://cover.png")
+        except Exception as e:
+            print(f"[embed] composite failed, falling back to raw thumbnail: {e}")
+            # Fallback: just use whatever we had
+            if isinstance(thumbnail, bytes):
+                file = discord.File(io.BytesIO(thumbnail), filename="cover.png")
+                embed.set_image(url="attachment://cover.png")
+            elif isinstance(thumbnail, str) and thumbnail.startswith("http"):
+                embed.set_image(url=thumbnail)
+
+    return embed, file
 
 # ── Audio download for voice playback ─────────────────────────────────────────
 
