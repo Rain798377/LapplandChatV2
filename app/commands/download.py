@@ -10,6 +10,8 @@ import yt_dlp
 import discord
 import random
 import time
+import io as _io
+from PIL import Image, ImageFilter, ImageEnhance
 from discord import app_commands
 from config import MAX_FILE_SIZE_MB, AUTOPLAY_DELAY, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET
 
@@ -248,10 +250,8 @@ async def build_now_playing_embed(
         Composite: blurred + desaturated background, sharp centered foreground.
         Returns PNG bytes.
         """
-        from PIL import Image, ImageFilter, ImageEnhance
-        import io as _io
 
-        W, H = 1280, 720  # 16:9 canvas
+        W, H = 3840, 2160  # 16:9 canvas 4K :)
 
         src = Image.open(_io.BytesIO(img_bytes)).convert("RGB")
 
@@ -266,7 +266,7 @@ async def build_now_playing_embed(
         by = (bg.height - H) // 2
         bg = bg.crop((bx, by, bx + W, by + H))
         # Heavy blur
-        bg = bg.filter(ImageFilter.GaussianBlur(radius=7)) # default 28
+        bg = bg.filter(ImageFilter.GaussianBlur(radius=10)) # default 28
         # Desaturate (pull toward gray) — keep a touch of color like the screenshot
         bg = ImageEnhance.Color(bg).enhance(0.35)
         # Darken slightly so the foreground pops
@@ -342,14 +342,14 @@ async def build_now_playing_embed(
             composite = await asyncio.get_event_loop().run_in_executor(
                 None, _build_composite, img_bytes
             )
-            file = discord.File(io.BytesIO(composite), filename="cover.png")
-            embed.set_image(url="attachment://cover.png")
+            file = discord.File(io.BytesIO(composite), filename=f"{artist} - {title} cover.png")
+            embed.set_image(url=f"attachment://{artist} - {title} cover.png")
         except Exception as e:
             print(f"[embed] composite failed, falling back to raw thumbnail: {e}")
             # Fallback: just use whatever we had
             if isinstance(thumbnail, bytes):
-                file = discord.File(io.BytesIO(thumbnail), filename="cover.png")
-                embed.set_image(url="attachment://cover.png")
+                file = discord.File(io.BytesIO(thumbnail), filename=f"{artist} - {title} cover.png")
+                embed.set_image(url=f"attachment://{artist} - {title} cover.png")
             elif isinstance(thumbnail, str) and thumbnail.startswith("http"):
                 embed.set_image(url=thumbnail)
 
