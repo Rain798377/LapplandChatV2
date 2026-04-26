@@ -88,24 +88,49 @@ def _build_search_attempts(query: str) -> list[str]:
     # Unwrap ytsearch1: prefix so we work with the raw text
     raw = re.sub(r"^ytsearch\d+:", "", query).strip()
 
-    # Pre-clean: strip bracketed noise words that confuse search
-    # e.g. [Explicit], [Official Video], (Official Audio), (Lyrics), etc.
-    noise = re.compile(r"[\(\[][^\)\]]*[\)\]]", re.IGNORECASE)
-    raw = noise.sub("", raw).strip()
+    # Check if user explicitly wants a slowed/reverb/etc version
+    variant_words = re.compile(
+        r"\bslowed\b|\breverb\b|\bultra\s*slowed\b|\bsped\s*up\b|\bnightcore\b",
+        re.IGNORECASE,
+    )
+    user_wants_variant = bool(variant_words.search(raw))
+
+    noise = re.compile(
+        r"[\(\[][^\)\]]*[\)\]]"
+        r"|\bslowed\b"
+        r"|\bultra\s*slowed\b"
+        r"|\breverb\b"
+        r"|\bsped\s*up\b"
+        r"|\bnightcore\b"
+        r"|\s*[-–]\s*\w*slowed\w*",
+        re.IGNORECASE,
+    )
 
     attempts = []
 
-    # 1. Pre-cleaned query
-    attempts.append(f"ytsearch1:{raw}")
+    if user_wants_variant:
+        # User asked for it — try exact first, clean version as fallback
+        attempts.append(f"ytsearch1:{raw}")
+        cleaned = noise.sub("", raw).strip()
+        if cleaned and cleaned != raw:
+            attempts.append(f"ytsearch1:{cleaned}")
+    else:
+        # Strip noise immediately so yt-dlp doesn't serve a slowed version
+        cleaned = noise.sub("", raw).strip() or raw
+        # Lead with "official audio" so YouTube ranks the original over slowed/reverb versions
+        attempts.append(f"ytsearch1:{cleaned} official audio")
+        # Fallback without the suffix
+        attempts.append(f"ytsearch1:{cleaned}")
 
-    # 2. Strip remaining parentheses/brackets (feat., version tags, etc.)
-    simplified = re.sub(r"[\(\[].*?[\)\]]", "", raw).strip()
-    if simplified and simplified != raw:
+    # Strip remaining parentheses/brackets (feat., version tags, etc.)
+    base = (cleaned if not user_wants_variant else raw)
+    simplified = re.sub(r"[\(\[].*?[\)\]]", "", base).strip()
+    if simplified and simplified != base:
         attempts.append(f"ytsearch1:{simplified}")
 
-    # 3. Keep only first segment before a pipe (not dash — dash separates Artist - Title)
-    first_segment = re.split(r"\s*\|\s*", simplified or raw)[0].strip()
-    if first_segment and first_segment != (simplified or raw):
+    # Keep only first segment before a pipe (not dash — dash separates Artist - Title)
+    first_segment = re.split(r"\s*\|\s*", simplified or base)[0].strip()
+    if first_segment and first_segment != (simplified or base):
         attempts.append(f"ytsearch1:{first_segment}")
 
     # Deduplicate while preserving order
