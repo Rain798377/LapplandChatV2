@@ -1,2 +1,7 @@
-grok
 discord.py
+groq
+yt-dlp
+requests
+aiohttp
+pillow
+mutagen
