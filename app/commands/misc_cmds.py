@@ -255,35 +255,6 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
         h, m = divmod(m, 60)
         return f"{h}:{m:02}:{s:02}" if h else f"{m}:{s:02}"
 
-
-    async def build_now_playing_embed(meta: dict, queued_count: int = 0) -> tuple[discord.Embed, discord.File | None]:
-        """Builds the Now Playing embed. Returns (embed, file_or_none)."""
-        title     = meta.get("title")    or "Unknown Title"
-        artist    = meta.get("artist")   or "Unknown Artist"
-        album     = meta.get("album")
-        duration  = meta.get("duration")
-        thumbnail = meta.get("thumbnail")
-
-        embed = discord.Embed(title=title, color=0x1DB954)
-        embed.add_field(name="Artist",   value=artist,                  inline=True)
-        embed.add_field(name="Duration", value=format_duration(duration), inline=True)
-        if album:
-            embed.add_field(name="Album", value=album, inline=True)
-        if queued_count:
-            embed.add_field(name="Up next", value=f"{queued_count} song{'s' if queued_count != 1 else ''}", inline=True)
-        embed.set_footer(text="Now Playing")
-
-        file = None
-
-        if isinstance(thumbnail, bytes):
-            file = discord.File(io.BytesIO(thumbnail), filename="cover.png")
-            embed.set_image(url="attachment://cover.png")
-        elif isinstance(thumbnail, str) and thumbnail.startswith("http"):
-            embed.set_image(url=thumbnail)
-
-        return embed, file
-
-
     @tree.command(name="play", description="Play a song or playlist in your voice channel")
     @app_commands.allowed_installs(guilds=True, users=False)
     @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
@@ -403,12 +374,14 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
             return
 
         meta["normalize"] = normalize
+        if _is_spotify_url(query):
+            meta["spotify_url"] = query
         display = meta.get("title") or label
         state   = voice_states[guild_id]
 
         if should_queue:
             state["queue"].append((filepath, display, meta))
-            embed, file = await build_now_playing_embed(meta, queued_count=len(state["queue"]))
+            embed, file = await build_now_playing_embed(meta, queued_count=len(state["queue"]), spotify_url=meta.get("spotify_url"))
             embed.set_footer(text=f"Added to queue • #{len(state['queue'])}")
             if file:
                 await status.edit(content=None, embed=embed, attachments=[file])
@@ -417,7 +390,7 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
         else:
             state["queue"].append((filepath, display, meta))
             play_next(guild_id, vc, bot, silent=True)
-            embed, file = await build_now_playing_embed(meta, queued_count=len(state["queue"]))
+            embed, file = await build_now_playing_embed(meta, queued_count=len(state["queue"]), spotify_url=meta.get("spotify_url"))
             if file:
                 await status.edit(content=None, embed=embed, attachments=[file])
             else:

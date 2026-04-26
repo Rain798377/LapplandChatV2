@@ -173,15 +173,50 @@ def _build_search_attempts(query: str) -> list[str]:
             unique.append(a)
     return unique
 
+# ── Metadata fetch ────────────────────────────────────────────────────────────
+
+async def fetch_spotify_track_meta(url: str) -> dict | None:
+    """Fetch clean metadata + album art from Spotify API for a track URL."""
+    try:
+        match = re.search(r"spotify\.com/track/([A-Za-z0-9]+)", url)
+        if not match:
+            return None
+        track_id = match.group(1)
+        token = await _get_spotify_token(SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET)
+        if not token:
+            return None
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"https://api.spotify.com/v1/tracks/{track_id}",
+                headers={"Authorization": f"Bearer {token}"},
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+
+        artists = [a["name"] for a in data.get("artists", [])]
+        images  = data.get("album", {}).get("images", [])
+        # Spotify returns images sorted largest first
+        thumb   = images[0]["url"] if images else None
+        return {
+            "title":     data.get("name", "").strip(),
+            "artist":    ", ".join(artists).strip(),
+            "album":     data.get("album", {}).get("name", "").strip() or None,
+            "duration":  data.get("duration_ms", 0) // 1000 or None,
+            "thumbnail": thumb,
+        }
+    except Exception as e:
+        print(f"[fetch_spotify_track_meta] failed: {e}")
+        return None
+
 
 # ── Embed builder ─────────────────────────────────────────────────────────────
 
-async def build_now_playing_embed(meta: dict, queued_count: int = 0) -> tuple[discord.Embed, discord.File | None]:
-    title     = meta.get("title")    or "Unknown Title"
-    artist    = meta.get("artist")   or "Unknown Artist"
-    album     = meta.get("album")
-    duration  = meta.get("duration")
-    thumbnail = meta.get("thumbnail")
+async def build_now_playing_embed(
+    meta: dict,
+    queued_count: int = 0,
+    spotify_url: str | None = None,
+) -> tuple[discord.Embed, discord.File | None]:
 
     def fmt_duration(seconds):
         if not seconds:
@@ -190,9 +225,47 @@ async def build_now_playing_embed(meta: dict, queued_count: int = 0) -> tuple[di
         h, m = divmod(m, 60)
         return f"{h}:{m:02}:{s:02}" if h else f"{m}:{s:02}"
 
+    def _normalize(s: str) -> str:
+        """Lowercase, strip punctuation/parens for fuzzy comparison."""
+        s = s.lower()
+        s = re.sub(r"\(.*?\)|\[.*?\]", "", s)          # strip (Official Audio) etc.
+        s = re.sub(r"[^a-z0-9\s]", "", s)
+        return s.strip()
+
+    def _matches(sp_meta: dict, dl_meta: dict) -> bool:
+        """True if Spotify metadata is a reasonable match for what was downloaded."""
+        sp_title  = _normalize(sp_meta.get("title", ""))
+        sp_artist = _normalize(sp_meta.get("artist", ""))
+        dl_title  = _normalize(dl_meta.get("title", ""))
+        dl_artist = _normalize(dl_meta.get("artist", ""))
+        title_ok  = sp_title and (sp_title in dl_title or dl_title in sp_title)
+        artist_ok = sp_artist and any(
+            a.strip() in dl_artist or dl_artist in a.strip()
+            for a in sp_artist.split(",")
+        )
+        return title_ok or artist_ok  # one match is enough — avoids false negatives
+
+    # ── Try to enrich with Spotify metadata ──────────────────────────────────
+    spotify_meta = None
+    if spotify_url:
+        spotify_meta = await fetch_spotify_track_meta(spotify_url)
+        if spotify_meta:
+            if _matches(spotify_meta, meta):
+                print(f"[embed] Spotify metadata matched — using Spotify cover art")
+                meta = {**meta, **spotify_meta}  # Spotify wins on all fields
+            else:
+                print(f"[embed] Spotify metadata did NOT match downloaded track — using YT metadata")
+                spotify_meta = None  # discard, fall through to YT thumbnail
+
+    title     = meta.get("title")    or "Unknown Title"
+    artist    = meta.get("artist")   or "Unknown Artist"
+    album     = meta.get("album")
+    duration  = meta.get("duration")
+    thumbnail = meta.get("thumbnail")
+
     embed = discord.Embed(color=0x1DB954)
 
-    # ── Large image at top ────────────────────────────────────────────────────
+    # ── Large image ───────────────────────────────────────────────────────────
     file = None
     if isinstance(thumbnail, bytes):
         file = discord.File(io.BytesIO(thumbnail), filename="cover.png")
@@ -200,10 +273,7 @@ async def build_now_playing_embed(meta: dict, queued_count: int = 0) -> tuple[di
     elif isinstance(thumbnail, str) and thumbnail.startswith("http"):
         embed.set_image(url=thumbnail)
 
-    # ── Title as embed title (renders above fields, below image) ──────────────
     embed.title = title
-
-    # ── Metadata fields below image ───────────────────────────────────────────
     embed.add_field(name="Artist",   value=artist,                 inline=True)
     embed.add_field(name="Duration", value=fmt_duration(duration), inline=True)
 
@@ -214,11 +284,10 @@ async def build_now_playing_embed(meta: dict, queued_count: int = 0) -> tuple[di
         embed.add_field(
             name="Up next",
             value=f"{queued_count} song{'s' if queued_count != 1 else ''}",
-            inline=True
+            inline=True,
         )
 
     embed.set_footer(text="Now Playing")
-
     return embed, file
 
 
@@ -889,7 +958,7 @@ def play_next(guild_id: int, vc: discord.VoiceClient, bot: discord.Client, *, si
             channel = bot.get_channel(state.get("text_channel_id"))
             if not channel:
                 return
-            embed, file = await build_now_playing_embed(meta, queued_count=len(state["queue"]))
+            embed, file = await build_now_playing_embed(meta, queued_count=len(state["queue"]), spotify_url=meta.get("spotify_url"))
             if file:
                 await channel.send(embed=embed, file=file)
             else:
@@ -968,7 +1037,7 @@ async def _autoplay_after_delay(guild_id: int, vc: discord.VoiceClient, bot: dis
 
         channel = bot.get_channel(state.get("text_channel_id"))
         if channel:
-            embed, file = await build_now_playing_embed(meta)
+            embed, file = await build_now_playing_embed(meta, spotify_url=None)
             embed.set_footer(text="Autoplaying")
             if file:
                 await channel.send(embed=embed, file=file)
