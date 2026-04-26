@@ -20,14 +20,6 @@ FFMPEG_OPTIONS = {
     "options": "-vn",
 }
 
-# Normalization filter for real-time streaming.
-# loudnorm (EBU R128) requires a two-pass analysis of the full file — it doesn't work
-# correctly when ffmpeg is streaming PCM to a pipe, producing little or no audible effect.
-# dynaudnorm works frame-by-frame in a single pass, which is correct for piped streaming.
-FFMPEG_OPTIONS_NORMALIZED = {
-    "options": "-af dynaudnorm=p=0.9:m=100:s=5",
-}
-
 # ── Spotify API ───────────────────────────────────────────────────────────────
 
 _spotify_token: str | None = None
@@ -59,10 +51,6 @@ async def _get_spotify_token(client_id: str, client_secret: str) -> str | None:
         return None
 
 
-
-def get_ffmpeg_options(normalize: bool = False) -> dict:
-    """Return the appropriate FFmpeg options based on whether normalization is enabled."""
-    return FFMPEG_OPTIONS_NORMALIZED if normalize else FFMPEG_OPTIONS
 
 AUTOPLAY_QUERIES = [
     "ytsearch1:{title} official audio",
@@ -174,6 +162,31 @@ def _build_search_attempts(query: str) -> list[str]:
             seen.add(a)
             unique.append(a)
     return unique
+
+async def _apply_loudnorm(filepath: str) -> str:
+    normalized = filepath.replace(".mp3", "_norm.mp3")
+    try:
+        before = os.path.getsize(filepath)
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-y", "-i", filepath,
+            "-af", "volume=-10dB,loudnorm=I=-24:TP=-2:LRA=11",
+            "-codec:a", "libmp3lame",
+            normalized,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if os.path.exists(normalized) and os.path.getsize(normalized) > 0:
+            after = os.path.getsize(normalized)
+            os.replace(normalized, filepath)
+            print(f"[loudnorm] applied — before={before/1024:.1f}KB after={after/1024:.1f}KB")
+        else:
+            print(f"[loudnorm] output missing or empty")
+            if stderr:
+                print(f"[loudnorm] ffmpeg stderr: {stderr.decode()[-1000:]}")
+    except Exception as e:
+        print(f"[loudnorm] failed: {e}")
+    return filepath
 
 # ── Metadata fetch ────────────────────────────────────────────────────────────
 
@@ -893,10 +906,15 @@ async def play_local_file(
     state["current_meta"]  = meta
     state["last_title"]    = display
 
+    # REPLACE from "vol = state.get("volume"..." down to "vc.play(source, after=after)" with:
     vol = state.get("volume", 1.0)
     normalize = meta.get("normalize", False)
+
+    if normalize:
+        await _apply_loudnorm(filepath)
+
     source = discord.PCMVolumeTransformer(
-        discord.FFmpegPCMAudio(filepath, **get_ffmpeg_options(normalize)),
+        discord.FFmpegPCMAudio(filepath, before_options="-bufsize 8192k"),
         volume=vol,
     )
 
@@ -970,10 +988,6 @@ def play_next(guild_id: int, vc: discord.VoiceClient, bot: discord.Client, *, si
     state["autoplaying"] = False
 
     if not state["queue"]:
-        # Use asyncio.ensure_future so we get a real asyncio.Task whose .cancel()
-        # injects CancelledError into the coroutine even after it has started sleeping.
-        # run_coroutine_threadsafe returns a concurrent.futures.Future whose .cancel()
-        # only works before the event loop picks it up — useless once the sleep begins.
         task = asyncio.run_coroutine_threadsafe(
             _schedule_autoplay_task(guild_id, vc, bot),
             bot.loop,
@@ -986,7 +1000,6 @@ def play_next(guild_id: int, vc: discord.VoiceClient, bot: discord.Client, *, si
     filepath, label, meta = state["queue"].pop(0)
     print(f"[play_next] {filepath} | exists={os.path.exists(filepath)} | size={os.path.getsize(filepath) if os.path.exists(filepath) else 'MISSING'}")
 
-    # Skip silently if the file vanished before we could play it
     if not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
         print(f"[play_next] file missing/empty, skipping: {filepath}")
         play_next(guild_id, vc, bot)
@@ -997,11 +1010,34 @@ def play_next(guild_id: int, vc: discord.VoiceClient, bot: discord.Client, *, si
     state["current_meta"]  = meta
     state["last_title"]    = label
 
+    asyncio.run_coroutine_threadsafe(
+        _play_next_async(guild_id, vc, bot, filepath, label, meta, silent),
+        bot.loop,
+    )
+
+
+async def _play_next_async(
+    guild_id: int,
+    vc: discord.VoiceClient,
+    bot: discord.Client,
+    filepath: str,
+    label: str,
+    meta: dict,
+    silent: bool,
+):
+    state = voice_states.get(guild_id)
+    if not state:
+        return
+
     vol = state.get("volume", 1.0)
     normalize = meta.get("normalize", False)
+
+    if normalize:
+        await _apply_loudnorm(filepath)
+
     source = discord.PCMVolumeTransformer(
-        discord.FFmpegPCMAudio(filepath, **get_ffmpeg_options(normalize)),
-        volume=vol
+        discord.FFmpegPCMAudio(filepath, **FFMPEG_OPTIONS),
+        volume=vol,
     )
 
     def after(error):
@@ -1016,19 +1052,23 @@ def play_next(guild_id: int, vc: discord.VoiceClient, bot: discord.Client, *, si
 
     vc.play(source, after=after)
 
+    if state["queue"]:
+        next_filepath, _, next_meta = state["queue"][0]
+    if next_meta.get("normalize"):
+        asyncio.ensure_future(_apply_loudnorm(next_filepath))
+
     if not silent:
-        # Send Now Playing embed to text channel
-        async def _send_now_playing():
-            channel = bot.get_channel(state.get("text_channel_id"))
-            if not channel:
-                return
-            embed, file = await build_now_playing_embed(meta, queued_count=len(state["queue"]), spotify_url=meta.get("spotify_url"))
+        channel = bot.get_channel(state.get("text_channel_id"))
+        if channel:
+            embed, file = await build_now_playing_embed(
+                meta,
+                queued_count=len(state["queue"]),
+                spotify_url=meta.get("spotify_url"),
+            )
             if file:
                 await channel.send(embed=embed, file=file)
             else:
                 await channel.send(embed=embed)
-
-        asyncio.run_coroutine_threadsafe(_send_now_playing(), bot.loop)
 
 
 async def _schedule_autoplay_task(guild_id: int, vc: discord.VoiceClient, bot: discord.Client):
@@ -1088,7 +1128,7 @@ async def _autoplay_after_delay(guild_id: int, vc: discord.VoiceClient, bot: dis
         vol = state.get("volume", 1.0)
         normalize = state.get("normalize", False)
         source = discord.PCMVolumeTransformer(
-            discord.FFmpegPCMAudio(filepath, **get_ffmpeg_options(normalize)),
+            discord.FFmpegPCMAudio(filepath, **FFMPEG_OPTIONS),
             volume=vol
         )
 

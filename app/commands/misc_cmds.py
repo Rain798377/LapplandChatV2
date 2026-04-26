@@ -13,7 +13,7 @@ from PIL import Image, ImageDraw, ImageFont
 from .download import (
     _cancel_autoplay, play_next, resolve_spotify_to_query, resolve_apple_music_to_query,
     resolve_playlist_tracks, search_and_download_audio, voice_states, build_now_playing_embed,
-    FFMPEG_OPTIONS, get_ffmpeg_options, play_local_file,
+    FFMPEG_OPTIONS, FFMPEG_OPTIONS, play_local_file,
     _is_spotify_url, _is_apple_music_url, _is_youtube_url, _is_soundcloud_url, _is_playlist_url,
 )
 
