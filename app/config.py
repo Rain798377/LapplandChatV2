@@ -8,6 +8,7 @@ REPLY_TO_ALL     = True
 ALLOWED_CHANNELS = [1483716134250217572]
 MIN_CHARS        = 5
 REPLY_CHANCE     = random.uniform(0.8, 0.9)
+AUTOPLAY_DELAY   = 5
 MODEL            = "llama-3.3-70b-versatile"
 MEMORY_FILE      = "data/memory.json"
 MAX_FILE_SIZE_MB = 25
