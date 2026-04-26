@@ -85,53 +85,23 @@ def _build_search_attempts(query: str) -> list[str]:
     if query.startswith("http://") or query.startswith("https://"):
         return [query]
 
-    # Unwrap ytsearch1: prefix so we work with the raw text
+    # Unwrap ytsearch prefix so we work with the raw text
     raw = re.sub(r"^ytsearch\d+:", "", query).strip()
-
-    # Check if user explicitly wants a slowed/reverb/etc version
-    variant_words = re.compile(
-        r"\bslowed\b|\breverb\b|\bultra\s*slowed\b|\bsped\s*up\b|\bnightcore\b",
-        re.IGNORECASE,
-    )
-    user_wants_variant = bool(variant_words.search(raw))
-
-    noise = re.compile(
-        r"[\(\[][^\)\]]*[\)\]]"
-        r"|\bslowed\b"
-        r"|\bultra\s*slowed\b"
-        r"|\breverb\b"
-        r"|\bsped\s*up\b"
-        r"|\bnightcore\b"
-        r"|\s*[-–]\s*\w*slowed\w*",
-        re.IGNORECASE,
-    )
 
     attempts = []
 
-    if user_wants_variant:
-        # User asked for it — try exact first, clean version as fallback
-        attempts.append(f"ytsearch1:{raw}")
-        cleaned = noise.sub("", raw).strip()
-        if cleaned and cleaned != raw:
-            attempts.append(f"ytsearch1:{cleaned}")
-    else:
-        # Strip noise immediately so yt-dlp doesn't serve a slowed version
-        cleaned = noise.sub("", raw).strip() or raw
-        # Lead with "official audio" so YouTube ranks the original over slowed/reverb versions
-        attempts.append(f"ytsearch1:{cleaned} official audio")
-        # Fallback without the suffix
-        attempts.append(f"ytsearch1:{cleaned}")
+    # 1. Full query — _pick_best_url will handle variant filtering from top 5
+    attempts.append(f"ytsearch5:{raw}")
 
-    # Strip remaining parentheses/brackets (feat., version tags, etc.)
-    base = (cleaned if not user_wants_variant else raw)
-    simplified = re.sub(r"[\(\[].*?[\)\]]", "", base).strip()
-    if simplified and simplified != base:
-        attempts.append(f"ytsearch1:{simplified}")
+    # 2. Strip parentheses/brackets (feat., version tags, etc.)
+    simplified = re.sub(r"[\(\[].*?[\)\]]", "", raw).strip()
+    if simplified and simplified != raw:
+        attempts.append(f"ytsearch5:{simplified}")
 
-    # Keep only first segment before a pipe (not dash — dash separates Artist - Title)
-    first_segment = re.split(r"\s*\|\s*", simplified or base)[0].strip()
-    if first_segment and first_segment != (simplified or base):
-        attempts.append(f"ytsearch1:{first_segment}")
+    # 3. Drop anything after a pipe
+    pipe_segment = re.split(r"\s*\|\s*", simplified or raw)[0].strip()
+    if pipe_segment and pipe_segment != (simplified or raw):
+        attempts.append(f"ytsearch5:{pipe_segment}")
 
     # Deduplicate while preserving order
     seen, unique = set(), []
@@ -198,10 +168,31 @@ async def search_and_download_audio(query: str) -> tuple[str, dict] | tuple[None
     searches if the exact query returns no results.
     """
 
+    VARIANT_RE = re.compile(
+        r"\bslowed\b|\breverb\b|\bnightcore\b|\bsped\s*up\b|\blofi\b|\blo[-\s]fi\b|\bsuper\s*slowed\b",
+        re.IGNORECASE,
+    )
+
     def _run(ydl_opts, q):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(q, download=True)
             return _first_entry(info)
+
+    def _pick_best_url(q: str, want_variant: bool) -> str | None:
+        """Fetch top 5 results without downloading, return URL of best match."""
+        opts = {"quiet": True, "no_warnings": True, "noplaylist": True, "extract_flat": True}
+        # Use ytsearch5 to get multiple candidates
+        search_q = re.sub(r"^ytsearch\d+:", "ytsearch5:", q)
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(search_q, download=False)
+        entries = (info or {}).get("entries") or []
+        for entry in entries:
+            title = entry.get("title") or ""
+            is_variant = bool(VARIANT_RE.search(title))
+            if want_variant == is_variant:
+                return entry.get("url") or entry.get("webpage_url")
+        # fallback: return first result regardless
+        return entries[0].get("url") or entries[0].get("webpage_url") if entries else None
 
     def _make_ydl_opts(outtmpl: str) -> dict:
         return {
@@ -225,6 +216,7 @@ async def search_and_download_audio(query: str) -> tuple[str, dict] | tuple[None
 
     loop = asyncio.get_event_loop()
     search_attempts = _build_search_attempts(query)
+    want_variant = bool(VARIANT_RE.search(re.sub(r"^ytsearch\d+:", "", query).strip()))
 
     for attempt in search_attempts:
         print(f"[search_and_download_audio] trying: {attempt}")
@@ -232,7 +224,15 @@ async def search_and_download_audio(query: str) -> tuple[str, dict] | tuple[None
             ydl_opts = _make_ydl_opts(os.path.join(tmpdir, "%(title).50s.%(ext)s"))
 
             try:
-                info = await loop.run_in_executor(None, lambda: _run(ydl_opts, attempt))
+                # For text searches, pick the best result from top 5 before downloading
+                if attempt.startswith("ytsearch"):
+                    best_url = await loop.run_in_executor(None, lambda: _pick_best_url(attempt, want_variant))
+                    if not best_url:
+                        continue
+                    print(f"[search_and_download_audio] picked: {best_url}")
+                    info = await loop.run_in_executor(None, lambda: _run(ydl_opts, best_url))
+                else:
+                    info = await loop.run_in_executor(None, lambda: _run(ydl_opts, attempt))
             except Exception as e:
                 print(f"[search_and_download_audio] error on '{attempt}': {e}")
                 continue
@@ -433,6 +433,8 @@ def play_next(guild_id: int, vc: discord.VoiceClient, bot: discord.Client):
         except Exception: pass
         state["current_file"] = None
 
+    state["autoplaying"] = False
+
     if not state["queue"]:
         future = asyncio.run_coroutine_threadsafe(
             _autoplay_after_delay(guild_id, vc, bot),
@@ -491,7 +493,11 @@ def play_next(guild_id: int, vc: discord.VoiceClient, bot: discord.Client):
 
 async def _autoplay_after_delay(guild_id: int, vc: discord.VoiceClient, bot: discord.Client):
     try:
-        await asyncio.sleep(AUTOPLAY_DELAY)
+        state = voice_states.get(guild_id)
+        if state and state.pop("skip_autoplay_delay", False):
+            pass  # skip the delay
+        else:
+            await asyncio.sleep(AUTOPLAY_DELAY)
 
         state = voice_states.get(guild_id)
         if not state or vc.is_playing() or vc.is_paused():
@@ -518,6 +524,7 @@ async def _autoplay_after_delay(guild_id: int, vc: discord.VoiceClient, bot: dis
         state["current_file"]  = filepath
         state["current_label"] = resolved_title
         state["current_meta"]  = meta
+        state["autoplaying"]   = True
         state["last_title"]    = resolved_title
 
         vol = state.get("volume", 1.0)

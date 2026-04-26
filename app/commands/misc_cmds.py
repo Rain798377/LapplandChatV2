@@ -358,9 +358,15 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
     @app_commands.allowed_installs(guilds=True, users=False)
     @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
     async def skip(interaction: discord.Interaction):
-        _cancel_autoplay(interaction.guild_id)
+        guild_id = interaction.guild_id
+        state = voice_states.get(guild_id)
+
+        _cancel_autoplay(guild_id)
         vc = interaction.guild.voice_client
         if vc and vc.is_playing():
+            # If autoplaying, flag to skip the delay so next autoplay fires immediately
+            if state and state.get("autoplaying"):
+                state["skip_autoplay_delay"] = True
             vc.stop()
             await interaction.response.send_message("Skipped.")
         else:
