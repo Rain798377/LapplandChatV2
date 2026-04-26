@@ -5,3 +5,4 @@ requests
 aiohttp
 pillow
 mutagen
+discord.py[voice]
