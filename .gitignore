@@ -2,5 +2,6 @@
 __pycache__/
 app/LapplandV2.py.bak
 data/memory.json
-commands/download.py.bak
+app/commands/download.py.bak
 todo
+app/spotify/music.py.bak

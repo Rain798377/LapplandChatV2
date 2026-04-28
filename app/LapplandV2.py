@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from config import (DISCORD_TOKEN, ALLOWED_CHANNELS, MIN_CHARS, REPLY_TO_ALL, REPLY_CHANCE, GREETINGS)
 from memory import load_memory, update_memory_from_conversation
 from ai import (groq_client, histories, get_ai_response, add_to_history, maybe_shift_mood)
-from commands import download, random_cmds, memory_cmds, misc_cmds
+from commands import download, random_cmds, memory_cmds, misc_cmds, spotify_cmds
 from checksum import checksum
 from colors import *
 
@@ -27,6 +27,7 @@ download.setup(tree)
 random_cmds.setup(tree)
 memory_cmds.setup(tree)
 misc_cmds.setup(tree, bot)
+spotify_cmds.setup(tree, bot)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def is_greeting(text: str) -> bool:
