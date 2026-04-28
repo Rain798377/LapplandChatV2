@@ -4,15 +4,166 @@ import asyncio
 import io as _io
 import aiohttp
 import discord
+from discord.ui import View, Button
 from PIL import Image, ImageFilter, ImageEnhance
 from .spotify_api import fetch_spotify_track_meta
+
+
+class NowPlayingView(View):
+    """
+    Persistent playback controls attached to the now-playing embed.
+    Imported lazily from spotify_player to avoid circular imports.
+    """
+
+    def __init__(self, guild_id: int, bot: discord.Client):
+        super().__init__(timeout=None)
+        self.guild_id = guild_id
+        self.bot      = bot
+        self._sync_loop_button()
+
+    def _sync_loop_button(self):
+        """Set the loop button label/style to match the current state["loop"] value."""
+        from .spotify_player import voice_states
+        state = voice_states.get(self.guild_id)
+        loop  = state.get("loop", "off") if state else "off"
+        labels = {"off": "🔁 Off", "track": "🔂 Track", "queue": "🔁 Queue"}
+        for item in self.children:
+            if getattr(item, "custom_id", None) == "np_loop":
+                item.label = labels.get(loop, "🔁 Off")
+                item.style = discord.ButtonStyle.primary if loop != "off" else discord.ButtonStyle.secondary
+                break
+
+    # ── helpers ───────────────────────────────────────────────────────────────
+
+    def _vc(self, interaction: discord.Interaction):
+        return interaction.guild.voice_client if interaction.guild else None
+
+    def _state(self):
+        from .spotify_player import voice_states
+        return voice_states.get(self.guild_id)
+
+    async def _refresh_pause_button(self, interaction: discord.Interaction):
+        """Flip the pause/resume button label to match current vc state."""
+        vc = self._vc(interaction)
+        for item in self.children:
+            if getattr(item, "custom_id", None) == "np_pause":
+                item.label = "▶" if (vc and vc.is_paused()) else "⏸"
+                break
+        try:
+            await interaction.message.edit(view=self)
+        except Exception:
+            pass
+
+    async def _require_same_channel(self, interaction: discord.Interaction) -> bool:
+        vc = self._vc(interaction)
+        if not vc:
+            await interaction.response.send_message("Not in a voice channel.", ephemeral=True)
+            return False
+        if not interaction.user.voice or interaction.user.voice.channel != vc.channel:
+            await interaction.response.send_message("Join my voice channel first.", ephemeral=True)
+            return False
+        return True
+
+    # ── buttons ───────────────────────────────────────────────────────────────
+
+    @discord.ui.button(label="⏮", style=discord.ButtonStyle.secondary, custom_id="np_back")
+    async def back(self, interaction: discord.Interaction, button: Button):
+        if not await self._require_same_channel(interaction):
+            return
+        from .spotify_player import voice_states, play_next
+        state = self._state()
+        vc    = self._vc(interaction)
+        if not state or not vc:
+            await interaction.response.send_message("Nothing is playing.", ephemeral=True)
+            return
+
+        # Re-insert current track at front so it plays again (one-shot back)
+        cur_file  = state.get("current_file")
+        cur_label = state.get("current_label")
+        cur_meta  = state.get("current_meta")
+        if cur_file and cur_label and cur_meta:
+            state["queue"].insert(0, (cur_file, cur_label, cur_meta))
+            state["current_file"] = None  # prevent deletion in play_next
+
+        vc.stop()  # triggers play_next via after-callback
+        await interaction.response.defer()
+
+    @discord.ui.button(label="⏸", style=discord.ButtonStyle.primary, custom_id="np_pause")
+    async def pause(self, interaction: discord.Interaction, button: Button):
+        if not await self._require_same_channel(interaction):
+            return
+        vc = self._vc(interaction)
+        if not vc:
+            await interaction.response.send_message("Not in a voice channel.", ephemeral=True)
+            return
+        if vc.is_playing():
+            vc.pause()
+        elif vc.is_paused():
+            vc.resume()
+        else:
+            await interaction.response.send_message("Nothing is playing.", ephemeral=True)
+            return
+        await interaction.response.defer()
+        await self._refresh_pause_button(interaction)
+
+    @discord.ui.button(label="⏭", style=discord.ButtonStyle.secondary, custom_id="np_skip")
+    async def skip(self, interaction: discord.Interaction, button: Button):
+        if not await self._require_same_channel(interaction):
+            return
+        from .spotify_player import voice_states, _cancel_autoplay
+        state = self._state()
+        vc    = self._vc(interaction)
+        if not vc or not vc.is_playing():
+            await interaction.response.send_message("Nothing is playing.", ephemeral=True)
+            return
+        _cancel_autoplay(self.guild_id)
+        if state and state.get("autoplaying"):
+            state["skip_autoplay_delay"] = True
+        vc.stop()
+        await interaction.response.defer()
+
+    @discord.ui.button(label="🔁 Off", style=discord.ButtonStyle.secondary, custom_id="np_loop")
+    async def loop(self, interaction: discord.Interaction, button: Button):
+        if not await self._require_same_channel(interaction):
+            return
+        state = self._state()
+        if not state:
+            await interaction.response.send_message("Nothing is playing.", ephemeral=True)
+            return
+        # Cycle: off → track → queue → off
+        cycle = {"off": "track", "track": "queue", "queue": "off"}
+        labels = {"off": "🔁 Off", "track": "🔂 Track", "queue": "🔁 Queue"}
+        new_mode     = cycle.get(state.get("loop", "off"), "off")
+        state["loop"] = new_mode
+        button.label  = labels[new_mode]
+        button.style  = discord.ButtonStyle.primary if new_mode != "off" else discord.ButtonStyle.secondary
+        await interaction.response.defer()
+        try:
+            await interaction.message.edit(view=self)
+        except Exception:
+            pass
+
+    @discord.ui.button(label="≡ Queue", style=discord.ButtonStyle.secondary, custom_id="np_queue")
+    async def queue(self, interaction: discord.Interaction, button: Button):
+        state = self._state()
+        if not state or (not state.get("current_label") and not state.get("queue")):
+            await interaction.response.send_message("Queue is empty.", ephemeral=True)
+            return
+        lines = []
+        if state.get("current_label"):
+            lines.append(f"**Now playing:** {state['current_label']}")
+        for i, (_, label, __) in enumerate(state["queue"], 1):
+            lines.append(f"{i}. {label}")
+        await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
 
 async def build_now_playing_embed(
     meta: dict,
     queued_count: int = 0,
     spotify_url: str | None = None,
-) -> tuple[discord.Embed, discord.File | None]:
+    guild_id: int | None = None,
+    bot: discord.Client | None = None,
+) -> tuple[discord.Embed, discord.File | None, View | None]:
 
     def fmt_duration(seconds):
         if not seconds:
@@ -122,6 +273,9 @@ async def build_now_playing_embed(
         )
     embed.set_footer(text="Now Playing")
 
+    # ── Build view ────────────────────────────────────────────────────────────
+    view = NowPlayingView(guild_id, bot) if guild_id and bot else None
+
     # ── Build composite image ─────────────────────────────────────────────────
     file = None
     img_bytes = await _get_image_bytes(thumbnail)
@@ -140,4 +294,4 @@ async def build_now_playing_embed(
             elif isinstance(thumbnail, str) and thumbnail.startswith("http"):
                 embed.set_image(url=thumbnail)
 
-    return embed, file
+    return embed, file, view

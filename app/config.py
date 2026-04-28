@@ -13,6 +13,7 @@ REPLY_CHANCE          = random.uniform(0.8, 0.9)
 AUTOPLAY_DELAY        = 5
 MODEL                 = "llama-3.3-70b-versatile"
 MEMORY_FILE           = "data/memory.json"
+DEFAULT_VOLUME        = 0.15 # Default volume level is 15% (0.0 to 2.0)
 MAX_FILE_SIZE_MB      = 25
 MAX_HISTORY           = 30
 

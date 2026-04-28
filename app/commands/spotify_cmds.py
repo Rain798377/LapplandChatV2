@@ -53,6 +53,7 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
                 "current_file": None, "current_label": None, "current_meta": None,
                 "last_title": None, "autoplay_task": None,
                 "text_channel_id": interaction.channel_id,
+                "loop": "off",
             }
         else:
             voice_states[guild_id]["text_channel_id"] = interaction.channel_id
@@ -99,12 +100,12 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
             source_label = "Spotify" if _is_spotify_url(query) else \
                            "Apple Music" if _is_apple_music_url(query) else \
                            "SoundCloud" if _is_soundcloud_url(query) else "YouTube"
-            embed, art = await build_now_playing_embed(first_meta or {}, queued_count=len(state["queue"]))
+            embed, art, view = await build_now_playing_embed(first_meta or {}, queued_count=len(state["queue"]), guild_id=guild_id, bot=bot)
             embed.set_footer(text=f"Queued {queued} tracks from {source_label} playlist")
             if art:
-                await status.edit(content=None, embed=embed, attachments=[art])
+                await status.edit(content=None, embed=embed, attachments=[art], view=view)
             else:
-                await status.edit(content=None, embed=embed)
+                await status.edit(content=None, embed=embed, view=view)
             return
 
         # ── Single track ──────────────────────────────────────────────────────
@@ -148,20 +149,20 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
 
         if should_queue:
             state["queue"].append((filepath, display, meta))
-            embed, file = await build_now_playing_embed(meta, queued_count=len(state["queue"]), spotify_url=meta.get("spotify_url"))
+            embed, file, view = await build_now_playing_embed(meta, queued_count=len(state["queue"]), spotify_url=meta.get("spotify_url"), guild_id=guild_id, bot=bot)
             embed.set_footer(text=f"Added to queue • #{len(state['queue'])}")
             if file:
-                await status.edit(content=None, embed=embed, attachments=[file])
+                await status.edit(content=None, embed=embed, attachments=[file], view=view)
             else:
-                await status.edit(content=None, embed=embed)
+                await status.edit(content=None, embed=embed, view=view)
         else:
             state["queue"].append((filepath, display, meta))
             play_next(guild_id, vc, bot, silent=True)
-            embed, file = await build_now_playing_embed(meta, queued_count=len(state["queue"]), spotify_url=meta.get("spotify_url"))
+            embed, file, view = await build_now_playing_embed(meta, queued_count=len(state["queue"]), spotify_url=meta.get("spotify_url"), guild_id=guild_id, bot=bot)
             if file:
-                await status.edit(content=None, embed=embed, attachments=[file])
+                await status.edit(content=None, embed=embed, attachments=[file], view=view)
             else:
-                await status.edit(content=None, embed=embed)
+                await status.edit(content=None, embed=embed, view=view)
 
 
     @spotify_cmds.command(name="skip", description="Skip the current song")
@@ -287,6 +288,27 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
         await interaction.response.send_message(f"Volume set to **{level}%**.")
 
 
+    @spotify_cmds.command(name="loop", description="Set loop mode for playback")
+    @app_commands.allowed_installs(guilds=True, users=False)
+    @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
+    @app_commands.describe(mode="off = no loop, track = repeat current song, queue = repeat whole queue")
+    @app_commands.choices(mode=[
+        app_commands.Choice(name="off",   value="off"),
+        app_commands.Choice(name="track", value="track"),
+        app_commands.Choice(name="queue", value="queue"),
+    ])
+    async def loop(interaction: discord.Interaction, mode: str):
+        guild_id = interaction.guild_id
+        state = voice_states.get(guild_id)
+        if not state:
+            await interaction.response.send_message("Nothing is playing.", ephemeral=True)
+            return
+
+        state["loop"] = mode
+        labels = {"off": "🔁 Loop off", "track": "🔂 Looping current track", "queue": "🔁 Looping queue"}
+        await interaction.response.send_message(labels[mode])
+
+
     @spotify_cmds.command(name="testplay", description="Test ffmpeg playback")
     async def testplay(interaction: discord.Interaction):
         if not interaction.user.voice:
@@ -354,6 +376,7 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
                 "current_file": None, "current_label": None, "current_meta": None,
                 "last_title": None, "autoplay_task": None,
                 "text_channel_id": interaction.channel_id,
+                "loop": "off",
             }
         else:
             voice_states[guild_id]["text_channel_id"] = interaction.channel_id
@@ -395,9 +418,9 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
             if not started:
                 await status.edit(content="Couldn't play that file.")
                 return
-            embed, art = await build_now_playing_embed(meta)
+            embed, art, view = await build_now_playing_embed(meta, guild_id=guild_id, bot=bot)
             if art:
-                await status.edit(content=None, embed=embed, attachments=[art])
+                await status.edit(content=None, embed=embed, attachments=[art], view=view)
             else:
-                await status.edit(content=None, embed=embed)
+                await status.edit(content=None, embed=embed, view=view)
     tree.add_command(spotify_cmds)

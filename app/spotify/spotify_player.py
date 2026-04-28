@@ -3,7 +3,7 @@ import re
 import asyncio
 import random
 import discord
-from config import AUTOPLAY_DELAY, MAX_FILE_SIZE_MB
+from config import AUTOPLAY_DELAY, MAX_FILE_SIZE_MB, DEFAULT_VOLUME
 from .utils import _apply_loudnorm
 from .audio import search_and_download_audio
 from .embed import build_now_playing_embed
@@ -23,6 +23,7 @@ AUTOPLAY_QUERIES = [
 # guild_id → state dict
 # state keys: queue, current_file, current_label, current_meta, last_title,
 #             volume, autoplaying, autoplay_task, text_channel_id, normalize
+# loop: "off" | "track" | "queue"
 voice_states = {}
 
 
@@ -87,7 +88,7 @@ async def _autoplay_after_delay(guild_id: int, vc: discord.VoiceClient, bot: dis
         state["autoplaying"]   = True
         state["last_title"]    = resolved_title
 
-        vol = state.get("volume", 1.0)
+        vol = state.get("volume", DEFAULT_VOLUME)
         source = discord.PCMVolumeTransformer(
             discord.FFmpegPCMAudio(filepath, **FFMPEG_OPTIONS),
             volume=vol
@@ -102,12 +103,12 @@ async def _autoplay_after_delay(guild_id: int, vc: discord.VoiceClient, bot: dis
 
         channel = bot.get_channel(state.get("text_channel_id"))
         if channel:
-            embed, file = await build_now_playing_embed(meta, spotify_url=None)
+            embed, file, view = await build_now_playing_embed(meta, spotify_url=None, guild_id=guild_id, bot=bot)
             embed.set_footer(text="Autoplaying")
             if file:
-                await channel.send(embed=embed, file=file)
+                await channel.send(embed=embed, file=file, view=view)
             else:
-                await channel.send(embed=embed)
+                await channel.send(embed=embed, view=view)
 
     except asyncio.CancelledError:
         pass
@@ -146,7 +147,7 @@ async def play_local_file(
     state["current_meta"]  = meta
     state["last_title"]    = display
 
-    vol = state.get("volume", 1.0)
+    vol = state.get("volume", DEFAULT_VOLUME)
     normalize = meta.get("normalize", False)
 
     if normalize:
@@ -220,9 +221,23 @@ def play_next(guild_id: int, vc: discord.VoiceClient, bot: discord.Client, *, si
     if not state:
         return
 
-    if state.get("current_file"):
-        try: os.remove(state["current_file"])
-        except Exception: pass
+    loop          = state.get("loop", "off")
+    current_file  = state.get("current_file")
+    current_label = state.get("current_label")
+    current_meta  = state.get("current_meta")
+
+    # loop track: re-insert at front so it plays again; don't delete the file
+    if loop == "track" and current_file and os.path.exists(current_file) and current_label and current_meta:
+        state["queue"].insert(0, (current_file, current_label, current_meta))
+        state["current_file"] = None
+    # loop queue: move finished track to end; don't delete the file
+    elif loop == "queue" and current_file and os.path.exists(current_file) and current_label and current_meta:
+        state["queue"].append((current_file, current_label, current_meta))
+        state["current_file"] = None
+    else:
+        if current_file:
+            try: os.remove(current_file)
+            except Exception: pass
         state["current_file"] = None
 
     state["autoplaying"] = False
@@ -269,7 +284,7 @@ async def _play_next_async(
     if not state:
         return
 
-    vol = state.get("volume", 1.0)
+    vol = state.get("volume", DEFAULT_VOLUME)
     normalize = meta.get("normalize", False)
 
     if normalize:
@@ -300,12 +315,14 @@ async def _play_next_async(
     if not silent:
         channel = bot.get_channel(state.get("text_channel_id"))
         if channel:
-            embed, file = await build_now_playing_embed(
+            embed, file, view = await build_now_playing_embed(
                 meta,
                 queued_count=len(state["queue"]),
                 spotify_url=meta.get("spotify_url"),
+                guild_id=guild_id,
+                bot=bot,
             )
             if file:
-                await channel.send(embed=embed, file=file)
+                await channel.send(embed=embed, file=file, view=view)
             else:
-                await channel.send(embed=embed)
+                await channel.send(embed=embed, view=view)
