@@ -3,7 +3,7 @@ import random
 
 DISCORD_TOKEN         = os.environ.get("DISCORD_TOKEN")
 GROQ_API_KEY          = os.environ.get("GROQ_API_KEY")
-FAL_KEY               = os.environ.get("FAL_KEY")
+HF_TOKEN              = os.environ.get("HF_TOKEN")
 SPOTIFY_CLIENT_ID     = os.environ.get("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET")
 BOT_NAME              = "Lappland"

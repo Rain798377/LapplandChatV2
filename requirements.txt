@@ -6,5 +6,5 @@ aiohttp
 pillow
 mutagen
 discord.py[voice]
-fal-client
+huggingface_hub
 httpx

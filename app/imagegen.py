@@ -1,45 +1,69 @@
 """
-imagegen.py — image generation via fal.ai (FLUX)
+imagegen.py — image generation via Hugging Face Inference Providers
 
-Install: pip install fal-client
-Env var:  FAL_KEY  (get one free at fal.ai)
+Install: pip install huggingface_hub pillow
+Env var:  HF_TOKEN  (huggingface.co/settings/tokens — needs "Make calls to Inference Providers" permission)
+
+Provider options (set IMAGEGEN_PROVIDER):
+  "fal-ai"    — FLUX.1-schnell, fast, good free tier
+  "replicate" — alternative if fal-ai quota runs out
+  "together"  — another solid option
+
+Model options (set IMAGEGEN_MODEL):
+  black-forest-labs/FLUX.1-schnell  — fast, free tier friendly
+  black-forest-labs/FLUX.1-dev      — higher quality, slower
+  ByteDance/SDXL-Lightning          — fast SDXL alternative
 """
 
 import os
-import fal_client
+import hashlib
+import time
+from huggingface_hub import InferenceClient
 from colors import *
-from config import FAL_KEY
 
-# Model options (swap freely):
-#   fal-ai/flux/schnell   — fast, free tier friendly
-#   fal-ai/flux/dev       — higher quality, slower
-IMAGEGEN_MODEL = "fal-ai/flux/schnell"
+HF_TOKEN = None
+try:
+    from config import HF_TOKEN
+except ImportError:
+    pass
+
+HF_TOKEN = HF_TOKEN or os.environ.get("HF_TOKEN")
+
+IMAGEGEN_PROVIDER = "fal-ai"
+IMAGEGEN_MODEL    = "black-forest-labs/FLUX.1-schnell"
 
 
 def generate_image(prompt: str, width: int = 1024, height: int = 1024) -> str | None:
     """
     Generate an image from a text prompt.
-    Returns the image URL string, or None on failure.
+    Saves the image to data/images/ and returns the local file path, or None on failure.
     """
-    if not FAL_KEY:
-        print(f"{RED}[imagegen] FAL_KEY not set{RESET}", flush=True)
+    if not HF_TOKEN:
+        print(f"{RED}[imagegen] HF_TOKEN not set{RESET}", flush=True)
         return None
 
-    os.environ["FAL_KEY"] = FAL_KEY  # fal_client reads this automatically
-
     try:
-        result = fal_client.run(
-            IMAGEGEN_MODEL,
-            arguments={
-                "prompt": prompt,
-                "image_size": {"width": width, "height": height},
-                "num_inference_steps": 4,   # schnell is good at 4 steps
-                "num_images": 1,
-            },
+        client = InferenceClient(
+            provider=IMAGEGEN_PROVIDER,
+            api_key=HF_TOKEN,
         )
-        url = result["images"][0]["url"]
-        print(f"{LIGHT_GREEN}[imagegen] generated: {url}{RESET}", flush=True)
-        return url
+
+        # Returns a PIL.Image object
+        image = client.text_to_image(
+            prompt,
+            model=IMAGEGEN_MODEL,
+            width=width,
+            height=height,
+        )
+
+        os.makedirs("data/images", exist_ok=True)
+        slug = hashlib.md5(prompt.encode()).hexdigest()[:8]
+        filename = f"data/images/{slug}_{int(time.time())}.png"
+        image.save(filename)
+
+        print(f"{LIGHT_GREEN}[imagegen] generated: {filename}{RESET}", flush=True)
+        return filename
+
     except Exception as e:
         print(f"{RED}[imagegen] failed: {e}{RESET}", flush=True)
         return None

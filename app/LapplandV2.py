@@ -49,13 +49,22 @@ def get_image_attachments(message: discord.Message) -> list[str]:
 @app_commands.describe(prompt="What do you want Lappland to draw?")
 async def imagine_cmd(interaction: discord.Interaction, prompt: str):
     await interaction.response.defer()
-    url = generate_image(prompt)
-    if url:
-        embed = discord.Embed(description=f"*{prompt}*", color=0x9b59b6)
-        embed.set_image(url=url)
-        await interaction.followup.send(embed=embed)
+    filepath = generate_image(prompt)
+    if filepath and os.path.exists(filepath):
+        await interaction.followup.send(
+            content=f"*{prompt}*",
+            file=discord.File(filepath),
+        )
+        # Clean up the temp file after sending
+        try:
+            os.remove(filepath)
+        except Exception:
+            pass
     else:
-        await interaction.followup.send("couldn't generate that image, sorry. check that FAL_KEY is set.", ephemeral=True)
+        await interaction.followup.send(
+            "couldn't generate that image, sorry. check that HF_TOKEN is set.",
+            ephemeral=True,
+        )
 
 # ── Events ────────────────────────────────────────────────────────────────────
 @bot.event
