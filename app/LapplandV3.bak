@@ -10,7 +10,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from config import (DISCORD_TOKEN, ALLOWED_CHANNELS, MIN_CHARS, REPLY_TO_ALL, REPLY_CHANCE, GREETINGS)
 from memory import load_memory, update_memory_from_conversation
 from ai import (groq_client, histories, get_ai_response, add_to_history, maybe_shift_mood)
-from imagegen import generate_image
 from commands import download, random_cmds, memory_cmds, misc_cmds, spotify_cmds
 from checksum import checksum
 from colors import *
@@ -35,28 +34,6 @@ def is_greeting(text: str) -> bool:
     words = text.lower().split()
     return any(word.strip("!?,. ") in GREETINGS for word in words)
 
-
-def get_image_attachments(message: discord.Message) -> list[str]:
-    """Return CDN URLs for any image attachments on the message."""
-    image_types = {"image/png", "image/jpeg", "image/gif", "image/webp"}
-    return [
-        a.url for a in message.attachments
-        if a.content_type and a.content_type.split(";")[0] in image_types
-    ]
-
-# ── Slash command: /imagine ───────────────────────────────────────────────────
-@tree.command(name="imagine", description="Generate an image from a prompt")
-@app_commands.describe(prompt="What do you want Lappland to draw?")
-async def imagine_cmd(interaction: discord.Interaction, prompt: str):
-    await interaction.response.defer()
-    url = generate_image(prompt)
-    if url:
-        embed = discord.Embed(description=f"*{prompt}*", color=0x9b59b6)
-        embed.set_image(url=url)
-        await interaction.followup.send(embed=embed)
-    else:
-        await interaction.followup.send("couldn't generate that image, sorry. check that FAL_KEY is set.", ephemeral=True)
-
 # ── Events ────────────────────────────────────────────────────────────────────
 @bot.event
 async def on_ready():
@@ -65,6 +42,7 @@ async def on_ready():
     await tree.sync(guild=guild)
     await tree.sync()
     print(f"{GREEN}Logged in as {bot.user} ✓{RESET}", flush=True)
+
     print(f"{LIGHT_BLUE}Mood: {ai.current_mood}{RESET}", flush=True)
 
     memory = load_memory()
@@ -83,11 +61,7 @@ async def on_message(message: discord.Message):
         content = content.replace(f"<@{mention.id}>", "").replace(f"<@!{mention.id}>", "")
     content = content.strip()
 
-    image_urls = get_image_attachments(message)
-    has_images = len(image_urls) > 0
-
-    # Allow image-only messages through even if text is short
-    if not has_images and len(content) < MIN_CHARS:
+    if len(content) < MIN_CHARS:
         return
 
     mentioned  = bot.user in message.mentions
@@ -100,14 +74,12 @@ async def on_message(message: discord.Message):
     maybe_shift_mood()
     memory = load_memory()
 
-    # Images always get a response (Lappland reacts to them naturally)
-    should_respond = mentioned or replied_to or is_greeting(content) or has_images
-    if not should_respond:
+    if not (mentioned or replied_to or is_greeting(content)):
         if not REPLY_TO_ALL:
             return
         if random.random() > REPLY_CHANCE:
             add_to_history(message.channel.id, message.author.display_name, content)
-            if len(content.split()) > 5 and random.random() < 0.75:
+            if len(content.split()) > 5 and random.random() < 0.75: # random chance to update memory even on non-reply messages if they're long enough, to keep it fresh
                 update_memory_from_conversation(
                     message.channel.id, str(message.author.id),
                     message.author.display_name, memory, histories, groq_client
@@ -116,13 +88,7 @@ async def on_message(message: discord.Message):
 
     async with message.channel.typing():
         try:
-            reply = get_ai_response(
-                message.channel.id,
-                content,
-                message.author.display_name,
-                memory,
-                image_urls=image_urls if has_images else None,
-            )
+            reply = get_ai_response(message.channel.id, content, message.author.display_name, memory)
             if len(content.split()) > 5 and random.random() < 0.75:
                 update_memory_from_conversation(
                     message.channel.id, str(message.author.id),

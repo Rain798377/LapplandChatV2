@@ -5,3 +5,5 @@ data/memory.json
 app/commands/download.py.bak
 todo
 app/spotify/music.py.bak
+app/ai.py.bak
+app/lapplandv2.bak
