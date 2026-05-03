@@ -41,6 +41,26 @@ def get_audio_opts(outtmpl: str) -> dict:
     }
 
 
+def get_video_opts(outtmpl: str, height: int) -> dict:
+    return {
+        "outtmpl": outtmpl,
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "format": (
+            f"bestvideo[ext=mp4][height<={height}]+bestaudio[ext=m4a]"
+            f"/bestvideo[height<={height}]+bestaudio"
+            f"/best[height<={height}]"
+            f"/best"
+        ),
+        "merge_output_format": "mov",
+        "postprocessors": [{
+            "key": "FFmpegVideoRemuxer",
+            "preferedformat": "mov",
+        }],
+    }
+
+
 def _first_entry(info: dict | None) -> dict:
     """Safely unwrap a yt-dlp search result, returning {} on empty/missing entries."""
     if not info:
@@ -57,19 +77,10 @@ def _first_entry(info: dict | None) -> dict:
 
 async def attempt_download(url: str, height: int) -> str | None:
     with tempfile.TemporaryDirectory() as tmpdir:
-        ydl_opts = {
-            "outtmpl": os.path.join(tmpdir, "%(title).50s.%(ext)s"),
-            "quiet": True,
-            "no_warnings": True,
-            "noplaylist": True,
-            "format": (
-                f"bestvideo[ext=mp4][height<={height}]+bestaudio[ext=m4a]"
-                f"/bestvideo[height<={height}]+bestaudio"
-                f"/best[height<={height}]"
-                f"/best"
-            ),
-            "merge_output_format": "mp4",
-        }
+        ydl_opts = get_video_opts(
+            os.path.join(tmpdir, "%(title).50s.%(ext)s"),
+            height,
+        )
 
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, lambda: _run_ydl(ydl_opts, url))
@@ -210,7 +221,8 @@ def setup(tree: app_commands.CommandTree):
     @app_commands.describe(
         url="The link to download from",
         quality="Video quality (default: auto picks best quality under file size limit)",
-        audio_only="Extract audio only (mp3)"
+        audio_only="Extract audio only (mp3)",
+        filename="Custom filename (without extension)"
     )
     @app_commands.choices(quality=[
         app_commands.Choice(name="1080p", value="1080"),
@@ -219,12 +231,15 @@ def setup(tree: app_commands.CommandTree):
         app_commands.Choice(name="360p",  value="360"),
         app_commands.Choice(name="auto",  value="auto"),
     ])
-    async def download_media(interaction: discord.Interaction, url: str, quality: str = "auto", audio_only: bool = False):
+    async def download_media(interaction: discord.Interaction, url: str, quality: str = "auto", audio_only: bool = False, filename: str = ""):
         await interaction.response.defer(thinking=True)
 
         if "spotify.com" in url or "open.spotify.com" in url:
             await download_spotify_track(interaction, url)
             return
+
+        # Sanitize custom filename — strip path separators and leading dots
+        clean_filename = re.sub(r'[\\/:*?"<>|]', "_", filename).strip(" .") if filename else ""
 
         if audio_only:
             with tempfile.TemporaryDirectory() as tmpdir:
@@ -248,7 +263,9 @@ def setup(tree: app_commands.CommandTree):
                     await interaction.followup.send(f"Audio came out {size_mb:.1f}MB, too big to upload")
                     return
 
-                await interaction.followup.send(file=discord.File(filepath, os.path.basename(filepath)))
+                ext = os.path.splitext(filepath)[1]
+                display_name = f"{clean_filename}{ext}" if clean_filename else os.path.basename(filepath)
+                await interaction.followup.send(file=discord.File(filepath, display_name))
                 return
 
         try:
@@ -272,7 +289,9 @@ def setup(tree: app_commands.CommandTree):
                     )
                     return
 
-            await interaction.followup.send(file=discord.File(filepath, os.path.basename(filepath)))
+            ext = os.path.splitext(filepath)[1]
+            display_name = f"{clean_filename}{ext}" if clean_filename else os.path.basename(filepath)
+            await interaction.followup.send(file=discord.File(filepath, display_name))
             try: os.remove(filepath)
             except Exception: pass
 
