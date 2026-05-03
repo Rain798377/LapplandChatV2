@@ -47,6 +47,8 @@ def get_image_attachments(message: discord.Message) -> list[str]:
 # ── Slash command: /imagine ───────────────────────────────────────────────────
 @tree.command(name="imagine", description="Generate an image from a prompt")
 @app_commands.describe(prompt="What do you want Lappland to draw?")
+@app_commands.allowed_installs(guilds=True, users=True)
+@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 async def imagine_cmd(interaction: discord.Interaction, prompt: str):
     await interaction.response.defer()
     filepath = generate_image(prompt)
