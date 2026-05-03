@@ -8,3 +8,4 @@ mutagen
 discord.py[voice]
 huggingface_hub
 httpx
+fonttools
