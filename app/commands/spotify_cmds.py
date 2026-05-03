@@ -12,6 +12,20 @@ from spotify.spotify_api import resolve_spotify_to_query
 from spotify.resolver import _is_playlist_url, _is_spotify_url, _is_apple_music_url, _is_youtube_url, _is_soundcloud_url, resolve_apple_music_to_query, resolve_playlist_tracks
 
 
+def _label_title(label: str) -> str:
+    """Extract the track title from a 'Artist - Title' label string."""
+    if " - " in label:
+        return label.split(" - ", 1)[1].strip()
+    return label.strip()
+
+
+def _label_artist(label: str) -> str:
+    """Extract the artist from a 'Artist - Title' label string."""
+    if " - " in label:
+        return label.split(" - ", 1)[0].strip()
+    return ""
+
+
 def setup(tree: app_commands.CommandTree, bot: discord.Client):
     spotify_cmds = app_commands.Group(name="spotify", description="Commands for Spotify playback")
 
@@ -136,7 +150,11 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
             label = query
             await status.edit(content=f"Searching YouTube for **{query}**...")
 
-        filepath, meta = await search_and_download_audio(search_query)
+        filepath, meta = await search_and_download_audio(
+            search_query,
+            expected_title=_label_title(label),
+            expected_artist=_label_artist(label),
+        )
         if not filepath:
             await status.edit(content="Couldn't download that track.")
             return

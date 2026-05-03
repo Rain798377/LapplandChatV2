@@ -88,6 +88,7 @@ async def resolve_spotify_to_query(url: str) -> tuple[str, str] | tuple[None, No
                     async with session.get(
                         f"https://api.spotify.com/v1/tracks/{track_id}",
                         headers={"Authorization": f"Bearer {token}"},
+                        timeout=aiohttp.ClientTimeout(total=10),
                     ) as resp:
                         if resp.status == 200:
                             data = await resp.json()
@@ -99,6 +100,10 @@ async def resolve_spotify_to_query(url: str) -> tuple[str, str] | tuple[None, No
                         else:
                             text = await resp.text()
                             print(f"[resolve_spotify] Spotify API {resp.status}: {text[:200]}")
+            else:
+                print(f"[resolve_spotify] Spotify API skipped — no token")
+        else:
+            print(f"[resolve_spotify] Spotify API skipped — no track ID in URL: {url!r}")
     except Exception as e:
         print(f"[resolve_spotify] Spotify API failed: {e}")
 
@@ -106,7 +111,8 @@ async def resolve_spotify_to_query(url: str) -> tuple[str, str] | tuple[None, No
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                f"https://api.song.link/v1-alpha.1/links?url={url}&userCountry=US"
+                f"https://api.song.link/v1-alpha.1/links?url={url}&userCountry=US",
+                timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
                 sl_data = await resp.json()
 
@@ -121,6 +127,8 @@ async def resolve_spotify_to_query(url: str) -> tuple[str, str] | tuple[None, No
             print(f"[resolve_spotify] song.link metadata — artist={artist!r} title={title!r}")
         elif entities:
             print(f"[resolve_spotify] song.link ok — using Spotify API metadata, checking platform URLs")
+        else:
+            print(f"[resolve_spotify] song.link returned no entities — response: {str(sl_data)[:200]}")
 
         platform_priority = ["soundcloud", "youtubeMusic", "youtube"]
         for platform in platform_priority:
@@ -155,20 +163,41 @@ async def resolve_spotify_to_query(url: str) -> tuple[str, str] | tuple[None, No
 
         if og_title:
             raw_title = og_title.group(1).strip()
-            raw_title = re.sub(r"(?i)^listen to (.+) on spotify$", r"\1", raw_title).strip()
-            artist = ""
+
+            # Spotify og:title has several known formats — strip all of them:
+            #   "Listen to {title} on Spotify"
+            #   "Listen to {title} on Spotify. Song · {artist} · {year}"
+            #   "{title}" (clean, nothing to strip)
+            # Also handle the case where Spotify appends ". Song - {title}" or similar.
+            raw_title = re.sub(r"(?i)\s*\.\s*song\b.*$", "", raw_title).strip()
+            raw_title = re.sub(r"(?i)^listen to (.+?) on spotify[\.\s]*$", r"\1", raw_title).strip()
+            raw_title = re.sub(r"(?i)^listen to (.+?) on spotify$", r"\1", raw_title).strip()
+
+            # Derive artist from og:description: "Song · Artist · Album · Year"
+            scraped_artist = ""
             if og_desc:
-                parts = [p.strip() for p in og_desc.group(1).split("·")]
-                if parts:
-                    artist = parts[0]
+                desc = og_desc.group(1)
+                # Strip any "Listen to X by Y on Spotify" wrapper first
+                desc = re.sub(r"(?i)^listen to .+ by (.+?) on spotify.*$", r"\1", desc).strip()
+                parts = [p.strip() for p in re.split(r"\s*[·•]\s*", desc)]
+                # First non-empty part after "Song" marker is typically the artist
+                for i, p in enumerate(parts):
+                    if p.lower() in ("song", "single", "album", "ep"):
+                        if i + 1 < len(parts):
+                            scraped_artist = parts[i + 1]
+                        break
+                if not scraped_artist and parts:
+                    scraped_artist = parts[0]
+
             if " - " in raw_title:
+                # Title already contains "Artist - Track", use as-is
                 label = raw_title
-            elif artist:
-                label = f"{artist} - {raw_title}"
+            elif scraped_artist and scraped_artist.lower() not in raw_title.lower():
+                label = f"{scraped_artist} - {raw_title}"
             else:
                 label = raw_title
 
-            print(f"[resolve_spotify] scraped og tags — label={label!r}")
+            print(f"[resolve_spotify] scraped og tags — raw={og_title.group(1)!r} → label={label!r}")
             return f"ytsearch1:{label}", label
 
     except Exception as e:

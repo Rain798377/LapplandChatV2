@@ -41,12 +41,15 @@ def _build_search_attempts(query: str) -> list[str]:
     """
     Given any query, return a list of progressively simplified searches to try.
     - If it's a URL, return it as-is (no fallbacks needed).
-    - Otherwise, clean noise tags and build fallback attempts.
+    - Otherwise, build attempts in priority order.
+
+    Note: _pick_best_url already queries YouTube Music internally for every
+    attempt, so we only need ytsearch variants here as the outer retry loop.
     """
     if query.startswith("http://") or query.startswith("https://"):
         return [query]
 
-    raw = re.sub(r"^ytsearch\d+:", "", query).strip()
+    raw = re.sub(r"^(?:ytsearch|ytmsearch)\d*:", "", query).strip()
 
     NOISE_RE = re.compile(
         r"[\[\(]"
@@ -59,18 +62,32 @@ def _build_search_attempts(query: str) -> list[str]:
     cleaned = re.sub(r"[\[\(]\s*[\]\)]", "", cleaned).strip()
 
     attempts = []
+
+    # 1. Cleaned query
     attempts.append(f"ytsearch5:{cleaned}")
 
+    # 2. Raw query (if noise brackets were stripped)
     if raw != cleaned:
         attempts.append(f"ytsearch5:{raw}")
 
+    # 3. Bare query — strip all remaining parentheticals
     bare = re.sub(r"[\(\[].*?[\)\]]", "", cleaned).strip()
     if bare and bare != cleaned:
         attempts.append(f"ytsearch5:{bare}")
 
+    # 4. Pipe-segment (drop everything after " | ")
     pipe_segment = re.split(r"\s*\|\s*", bare or cleaned)[0].strip()
     if pipe_segment and pipe_segment != (bare or cleaned):
         attempts.append(f"ytsearch5:{pipe_segment}")
+
+    # 5. First artist only — handles "Artist1, Artist2 - Title" where the
+    #    comma-separated list confuses search; retry with just the lead artist.
+    comma_match = re.match(r"^([^,]+),\s*[^-]+-\s*(.+)$", cleaned)
+    if comma_match:
+        first_artist = comma_match.group(1).strip()
+        title_part   = comma_match.group(2).strip()
+        simplified   = f"{first_artist} - {title_part}"
+        attempts.append(f"ytsearch5:{simplified}")
 
     seen, unique = set(), []
     for a in attempts:

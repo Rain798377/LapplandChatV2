@@ -4,6 +4,7 @@ import glob
 import shutil
 import asyncio
 import tempfile
+import functools
 import yt_dlp
 from .utils import _first_entry, _build_search_attempts
 
@@ -13,58 +14,241 @@ VARIANT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Cache: (query_lower, want_variant, expected_title_lower, expected_artist_lower) → best URL
+# Prevents non-deterministic YTMusic results from returning a different video on each call.
+_url_cache: dict[tuple, str] = {}
 
-def _pick_best_url(q: str, want_variant: bool) -> str | None:
+
+def _ytmusic_search_entries(query_text: str, n: int = 5) -> list[dict]:
+    """
+    Search YouTube Music and return up to `n` entries whose URLs are on
+    music.youtube.com — plain youtube.com videos are excluded so we only
+    get proper YTMusic catalogue results (songs, not user-uploaded videos).
+
+    Fetches 3x the requested count before filtering to absorb plain-YT results
+    and give the scorer more options to work with.
+    """
+    import urllib.parse
+    search_url = (
+        "https://music.youtube.com/search?q="
+        + urllib.parse.quote_plus(query_text)
+    )
+    fetch_n = n * 3
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "extract_flat": True,
+        "playlist_items": f"1:{fetch_n}",
+    }
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(search_url, download=False)
+        entries = (info or {}).get("entries") or []
+
+        # Flatten one level — YTMusic search returns section playlists
+        flat = []
+        for e in entries:
+            if e and e.get("entries"):
+                flat.extend(e["entries"])
+            elif e:
+                flat.append(e)
+
+        # Keep only music.youtube.com results; skip bare youtube.com videos.
+        music_only = []
+        for e in flat:
+            if not e:
+                continue
+            webpage = e.get("webpage_url") or ""
+            if webpage and "music.youtube.com" not in webpage and "youtube.com/watch" in webpage:
+                print(f"[_ytmusic_search_entries] skipping plain YT video: {e.get('title')!r}")
+                continue
+            music_only.append(e)
+            if len(music_only) >= n:
+                break
+
+        print(f"[_ytmusic_search_entries] {len(music_only)} music.youtube.com results for {query_text!r}")
+        return music_only
+    except Exception as exc:
+        print(f"[_ytmusic_search_entries] failed: {exc}")
+        return []
+
+
+def _normalize_meta(s: str) -> str:
+    """Lowercase, strip bracketed suffixes and punctuation for fuzzy comparison."""
+    s = s.lower()
+    s = re.sub(r"\(.*?\)|\[.*?\]", "", s)   # drop (feat. ...), [official], etc.
+    s = re.sub(r"[^\w\s]", "", s)            # drop punctuation
+    return s.strip()
+
+
+def _meta_match_bonus(
+    entry_title: str,
+    entry_artist: str,
+    expected_title: str,
+    expected_artist: str,
+) -> int:
+    """
+    Return a score bonus based on how well the entry's title/artist match
+    the expected (e.g. Spotify) metadata.
+
+    Scoring:
+      +6  exact normalised title match
+      +3  expected title is a substring of entry title (or vice-versa)
+      +4  exact normalised artist match
+      +2  any expected artist token appears in entry artist
+      ─────────────────────────────────────────────────────
+      max +10 (title) + +6 (artist) = +16
+    """
+    bonus = 0
+    if not (expected_title or expected_artist):
+        return 0
+
+    if expected_title:
+        et = _normalize_meta(expected_title)
+        dt = _normalize_meta(entry_title)
+        if et and dt:
+            if et == dt:
+                bonus += 6
+            elif et in dt or dt in et:
+                bonus += 3
+
+    if expected_artist:
+        ea = _normalize_meta(expected_artist)
+        da = _normalize_meta(entry_artist)
+        if ea and da:
+            if ea == da:
+                bonus += 4
+            else:
+                # Handle "Artist1, Artist2" — any token match counts
+                for tok in re.split(r"[,&]+", ea):
+                    tok = tok.strip()
+                    if tok and tok in da:
+                        bonus += 2
+                        break
+
+    return bonus
+
+
+# Titles containing these words are penalised unless the query also contains them.
+_LIVE_RE = re.compile(
+    r"\blive\b|\bconcert\b|\btour\b|\bperformance\b|\bunplugged\b|\bacoustic\b"
+    r"|\bkaraoke\b|\binstrumental\b|\bcover\b|\btribute\b",
+    re.IGNORECASE,
+)
+
+
+def _pick_best_url(
+    q: str,
+    want_variant: bool,
+    expected_title: str = "",
+    expected_artist: str = "",
+) -> str | None:
     MAX_DURATION_SECONDS = 30 * 60  # 30 minutes
-    opts = {"quiet": True, "no_warnings": True, "noplaylist": True, "extract_flat": True}
-    search_q = re.sub(r"^ytsearch\d+:", "ytsearch5:", q)
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(search_q, download=False)
-    entries = (info or {}).get("entries") or []
-    if not entries:
+
+    raw_query = re.sub(r"^(?:ytsearch|ytmsearch)\d*:", "", q).strip()
+
+    # ── Cache lookup ──────────────────────────────────────────────────────────
+    cache_key = (
+        raw_query.lower(),
+        want_variant,
+        expected_title.lower(),
+        expected_artist.lower(),
+    )
+    if cache_key in _url_cache:
+        cached = _url_cache[cache_key]
+        print(f"[_pick_best_url] cache hit → {cached}")
+        return cached
+
+    # ── Collect candidates: YTMusic (music.youtube.com only) + regular YT ────
+    yt_music_entries = _ytmusic_search_entries(raw_query, n=5)
+
+    yt_opts = {"quiet": True, "no_warnings": True, "noplaylist": True, "extract_flat": True}
+    search_q = re.sub(r"^(?:ytsearch|ytmsearch)\d*:", "ytsearch5:", q)
+    try:
+        with yt_dlp.YoutubeDL(yt_opts) as ydl:
+            yt_info = ydl.extract_info(search_q, download=False)
+        yt_entries = (yt_info or {}).get("entries") or []
+    except Exception as exc:
+        print(f"[_pick_best_url] ytsearch failed: {exc}")
+        yt_entries = []
+
+    # (entry, from_ytmusic)
+    entries_with_source = (
+        [(e, True)  for e in yt_music_entries if e] +
+        [(e, False) for e in yt_entries       if e]
+    )
+
+    if not entries_with_source:
         return None
 
-    raw_query = re.sub(r"^ytsearch\d+:", "", q).strip().lower()
+    raw_lower = raw_query.lower()
     noise = {"official", "audio", "video", "music", "lyrics", "explicit",
              "clean", "ft", "feat", "remastered", "hd", "4k", "visualizer"}
-    query_words = [w for w in re.findall(r"\w+", raw_query) if w not in noise]
 
-    def title_score(title: str) -> int:
+    ascii_words  = [w for w in re.findall(r"[a-z0-9]+", raw_lower) if w not in noise]
+    unicode_toks = re.findall(r"[^\x00-\x7F\s]+", raw_lower)
+    query_tokens = ascii_words + unicode_toks
+
+    query_wants_live = bool(_LIVE_RE.search(raw_lower))
+
+    def title_score(entry: dict, from_ytmusic: bool) -> int:
+        title  = entry.get("title")  or ""
+        artist = entry.get("artist") or entry.get("uploader") or entry.get("channel") or ""
         t = title.lower()
-        return sum(1 for w in query_words if w in t)
+
+        score = sum(1 for w in query_tokens if w in t)
+        # CJK exact-match bonus
+        score += sum(2 for tok in unicode_toks if tok in t)
+        # Penalise live/cover/etc. when not wanted
+        if not query_wants_live and _LIVE_RE.search(title):
+            score -= 4
+        # YTMusic entries are more likely official studio versions
+        if from_ytmusic:
+            score += 1
+        # Metadata match bonus (Spotify title/artist vs yt-dlp entry fields)
+        score += _meta_match_bonus(title, artist, expected_title, expected_artist)
+        return score
 
     best_url, best_score = None, -1
-    for entry in entries:
-        title = entry.get("title") or ""
+    for entry, from_ytm in entries_with_source:
         duration = entry.get("duration") or 0
         if duration and duration > MAX_DURATION_SECONDS:
             continue
+        title = entry.get("title") or ""
         is_variant = bool(VARIANT_RE.search(title))
         if want_variant != is_variant:
             continue
-        score = title_score(title)
-        if score > best_score:
+        score = title_score(entry, from_ytm)
+        url   = entry.get("url") or entry.get("webpage_url")
+        if score > best_score and url:
             best_score = score
-            best_url = entry.get("url") or entry.get("webpage_url")
+            best_url   = url
+            print(f"[_pick_best_url] candidate score={score} ytm={from_ytm} title={title!r}")
 
     if best_url:
-        print(f"[_pick_best_url] best score={best_score}/{len(query_words)}: {best_url}")
+        print(f"[_pick_best_url] best score={best_score}/{len(query_tokens)}: {best_url}")
+        _url_cache[cache_key] = best_url
         return best_url
 
     # No entry matched variant class — fall back to highest-scoring overall
     best_url, best_score = None, -1
-    for entry in entries:
-        title = entry.get("title") or ""
+    for entry, from_ytm in entries_with_source:
         duration = entry.get("duration") or 0
         if duration and duration > MAX_DURATION_SECONDS:
             continue
-        score = title_score(title)
-        if score > best_score:
+        url   = entry.get("url") or entry.get("webpage_url")
+        score = title_score(entry, from_ytm)
+        if score > best_score and url:
             best_score = score
-            best_url = entry.get("url") or entry.get("webpage_url")
+            best_url   = url
 
-    print(f"[_pick_best_url] fallback score={best_score}/{len(query_words)}: {best_url}")
-    return best_url or (entries[0].get("url") or entries[0].get("webpage_url"))
+    print(f"[_pick_best_url] fallback score={best_score}/{len(query_tokens)}: {best_url}")
+    first = entries_with_source[0][0]
+    result = best_url or (first.get("url") or first.get("webpage_url"))
+    if result:
+        _url_cache[cache_key] = result
+    return result
 
 
 def _make_ydl_opts(outtmpl: str) -> dict:
@@ -89,10 +273,18 @@ def _make_ydl_opts(outtmpl: str) -> dict:
     }
 
 
-async def search_and_download_audio(query: str) -> tuple[str, dict] | tuple[None, None]:
+async def search_and_download_audio(
+    query: str,
+    expected_title: str = "",
+    expected_artist: str = "",
+) -> tuple[str, dict] | tuple[None, None]:
     """
     Try to download audio for `query`, falling back to progressively simpler
     searches if the exact query returns no results.
+
+    `expected_title` and `expected_artist` (e.g. from Spotify metadata) are
+    forwarded to _pick_best_url where they boost results whose yt-dlp metadata
+    closely matches, helping avoid wrong versions/covers/live recordings.
     """
 
     def _run(ydl_opts, q):
@@ -105,19 +297,34 @@ async def search_and_download_audio(query: str) -> tuple[str, dict] | tuple[None
     want_variant = bool(VARIANT_RE.search(re.sub(r"^ytsearch\d+:", "", query).strip()))
 
     for attempt in search_attempts:
-        print(f"[search_and_download_audio] trying: {attempt}")
+        # Capture loop variable by value — lambdas share the same closure cell
+        # and would otherwise all reference the final iteration's value.
+        _attempt = attempt
+
+        print(f"[search_and_download_audio] trying: {_attempt}")
         with tempfile.TemporaryDirectory() as tmpdir:
             ydl_opts = _make_ydl_opts(os.path.join(tmpdir, "%(title).50s.%(ext)s"))
 
             try:
-                if attempt.startswith("ytsearch"):
-                    best_url = await loop.run_in_executor(None, lambda: _pick_best_url(attempt, want_variant))
+                if _attempt.startswith("ytsearch") or _attempt.startswith("ytmsearch"):
+                    best_url = await loop.run_in_executor(
+                        None,
+                        lambda a=_attempt: _pick_best_url(
+                            a, want_variant,
+                            expected_title=expected_title,
+                            expected_artist=expected_artist,
+                        ),
+                    )
                     if not best_url:
                         continue
                     print(f"[search_and_download_audio] picked: {best_url}")
-                    info = await loop.run_in_executor(None, lambda: _run(ydl_opts, best_url))
+                    info = await loop.run_in_executor(
+                        None, lambda u=best_url: _run(ydl_opts, u)
+                    )
                 else:
-                    info = await loop.run_in_executor(None, lambda: _run(ydl_opts, attempt))
+                    info = await loop.run_in_executor(
+                        None, lambda a=_attempt: _run(ydl_opts, a)
+                    )
             except Exception as e:
                 print(f"[search_and_download_audio] error on '{attempt}': {e}")
                 continue

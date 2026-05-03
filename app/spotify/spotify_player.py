@@ -75,6 +75,7 @@ async def _autoplay_after_delay(guild_id: int, vc: discord.VoiceClient, bot: dis
         search_query = random.choice(AUTOPLAY_QUERIES).format(title=clean)
 
         filepath, meta = await search_and_download_audio(search_query)
+        # Autoplay is discovery-mode — no strict expected metadata
         if not filepath:
             return
 
@@ -188,7 +189,11 @@ async def _retry_failed_track(
     if channel:
         await channel.send(f"Playback failed for **{title}**, re-downloading...")
 
-    filepath, new_meta = await search_and_download_audio(f"ytsearch1:{title}")
+    filepath, new_meta = await search_and_download_audio(
+        f"ytsearch1:{title}",
+        expected_title=meta.get("title") or "",
+        expected_artist=meta.get("artist") or "",
+    )
 
     if not filepath:
         if channel:
