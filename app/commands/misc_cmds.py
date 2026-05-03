@@ -14,7 +14,13 @@ OWNER_ID = 955604666689921086
 
 
 def is_admin(interaction: discord.Interaction) -> bool:
-    return interaction.guild is not None and interaction.user.guild_permissions.administrator
+    # Owner can always use admin commands (including in DMs)
+    if interaction.user.id == OWNER_ID:
+        return True
+    # In DMs, no guild = no admin check possible
+    if interaction.guild is None:
+        return False
+    return interaction.user.guild_permissions.administrator
 
 
 def setup(tree: app_commands.CommandTree, bot: discord.Client):
@@ -199,6 +205,8 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
         await interaction.followup.send(file=discord.File(buffer, filename="quote.png"))
 
     @tree.context_menu(name="Make Quote")
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def make_quote(interaction: discord.Interaction, message: discord.Message):
         await interaction.response.defer()
         W, H = 1200, 400
