@@ -209,39 +209,103 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def make_quote(interaction: discord.Interaction, message: discord.Message):
         await interaction.response.defer()
+
         W, H = 1200, 400
-        img = Image.new("RGB", (W, H), (0, 0, 0))
-        draw = ImageDraw.Draw(img)
-        font_path = "/tmp/Lato-Regular.ttf"
+        PADDING = 60
+        ACCENT_W = 5
+
+        # ── Fonts (Noto Sans = full Unicode/emoji support, no boxes) ──────────
+        font_regular = "/tmp/NotoSans-Regular.ttf"
+        font_bold    = "/tmp/NotoSans-Bold.ttf"
         try:
-            urllib.request.urlretrieve("https://github.com/google/fonts/raw/main/ofl/lato/Lato-Regular.ttf", font_path)
-            font_main = ImageFont.truetype(font_path, 56)
-            font_sub  = ImageFont.truetype(font_path, 32)
+            if not os.path.exists(font_regular):
+                urllib.request.urlretrieve(
+                    "https://github.com/google/fonts/raw/main/ofl/notosans/NotoSans%5Bwdth%2Cwght%5D.ttf",
+                    font_regular,
+                )
+            if not os.path.exists(font_bold):
+                import shutil as _shutil
+                _shutil.copy(font_regular, font_bold)
+            font_quote  = ImageFont.truetype(font_regular, 48)
+            font_name   = ImageFont.truetype(font_bold,    28)
+            font_handle = ImageFont.truetype(font_regular, 22)
         except Exception:
-            font_main = ImageFont.load_default()
-            font_sub  = ImageFont.load_default()
+            font_quote  = ImageFont.load_default()
+            font_name   = ImageFont.load_default()
+            font_handle = ImageFont.load_default()
+
+        # ── Fetch avatar ───────────────────────────────────────────────────────
         async with aiohttp.ClientSession() as session:
             async with session.get(message.author.display_avatar.with_size(512).url) as resp:
                 avatar_data = await resp.read()
+
+        # ── Canvas ────────────────────────────────────────────────────────────
+        img  = Image.new("RGB", (W, H), (10, 10, 15))
+        draw = ImageDraw.Draw(img)
+
+        # Avatar with smooth cubic fade left→right
         avatar = Image.open(io.BytesIO(avatar_data)).convert("RGBA").resize((H, H))
-        fade = Image.new("L", (H, H))
+        fade = Image.new("L", (H, H), 0)
+        fade_draw = ImageDraw.Draw(fade)
         for x in range(H):
-            alpha = max(0, 220 - int((x / H) ** 1.5 * 220))
-            for y in range(H):
-                fade.putpixel((x, y), alpha)
+            t = x / H
+            alpha = int(255 * max(0.0, 1 - t ** 1.8))
+            fade_draw.line([(x, 0), (x, H - 1)], fill=alpha)
         avatar.putalpha(fade)
         img.paste(avatar, (0, 0), avatar)
-        text_x = W // 2 + 80
-        quote_text = message.content or "[no text]"
-        author_text = f"- {message.author.display_name}"
-        bbox_main = font_main.getbbox(quote_text)
-        bbox_sub  = font_sub.getbbox(author_text)
-        main_h = bbox_main[3] - bbox_main[1]
-        sub_h  = bbox_sub[3]  - bbox_sub[1]
-        gap = 20
-        start_y = H // 2 - (main_h + gap + sub_h) // 2
-        draw.text((text_x, start_y),                quote_text,  font=font_main, fill=(255, 255, 255))
-        draw.text((text_x, start_y + main_h + gap), author_text, font=font_sub,  fill=(180, 180, 180))
+
+        # Vignette
+        vignette = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        vd = ImageDraw.Draw(vignette)
+        for i in range(80):
+            vd.rectangle([i, i, W - i, H - i], outline=(0, 0, 0, int(i * 1.8)))
+        img.paste(vignette, (0, 0), vignette)
+
+        # Accent bar left of text
+        text_start_x = H // 2 + 20
+        bar_x = text_start_x - 20
+        draw.rectangle([bar_x, PADDING, bar_x + ACCENT_W, H - PADDING], fill=(255, 255, 255))
+
+        # ── Word-wrap (max 38 chars/line, 3 lines) ────────────────────────────
+        quote_text = message.content or "[no text content]"
+        max_chars  = 38
+        words      = quote_text.split()
+        lines, cur = [], ""
+        for word in words:
+            test = (cur + " " + word).strip()
+            if len(test) <= max_chars:
+                cur = test
+            else:
+                if cur:
+                    lines.append(cur)
+                cur = word
+                if len(lines) >= 3:
+                    break
+        if cur and len(lines) < 4:
+            lines.append(cur)
+        if len(lines) > 3:
+            lines[2] = lines[2][:max_chars - 3] + "..."
+            lines = lines[:3]
+        wrapped = "\n".join(lines)
+
+        # ── Vertically centered text block ────────────────────────────────────
+        line_h   = font_quote.getbbox("Ag")[3] + 8
+        name_h   = font_name.getbbox("Ag")[3] + 4
+        handle_h = font_handle.getbbox("Ag")[3]
+        block_h  = line_h * len(lines) + 16 + name_h + handle_h
+        text_y   = (H - block_h) // 2
+        text_x   = text_start_x + PADDING // 2
+
+        draw.multiline_text((text_x, text_y), wrapped, font=font_quote,
+                            fill=(255, 255, 255), spacing=8)
+
+        author_y = text_y + line_h * len(lines) + 16
+        draw.text((text_x, author_y),              f"— {message.author.display_name}",
+                  font=font_name,   fill=(220, 220, 220))
+        draw.text((text_x, author_y + name_h + 2), f"@{message.author.name}",
+                  font=font_handle, fill=(140, 140, 150))
+
+        # ── Send ──────────────────────────────────────────────────────────────
         buffer = io.BytesIO()
         img.save(buffer, format="PNG")
         buffer.seek(0)
