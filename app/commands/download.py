@@ -47,17 +47,15 @@ def get_video_opts(outtmpl: str, height: int) -> dict:
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
+        "ignoreerrors": False,
         "format": (
             f"bestvideo[ext=mp4][height<={height}]+bestaudio[ext=m4a]"
             f"/bestvideo[height<={height}]+bestaudio"
             f"/best[height<={height}]"
             f"/best"
         ),
-        "merge_output_format": "mov",
-        "postprocessors": [{
-            "key": "FFmpegVideoRemuxer",
-            "preferedformat": "mov",
-        }],
+        "merge_output_format": "mp4",  # was "mov" — caused mp42 fallback
+        # removed FFmpegVideoRemuxer postprocessor — yt-dlp handles merging natively
     }
 
 
@@ -83,14 +81,19 @@ async def attempt_download(url: str, height: int) -> str | None:
         )
 
         loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, lambda: _run_ydl(ydl_opts, url))
+        try:
+            await loop.run_in_executor(None, lambda: _run_ydl(ydl_opts, url))
+        except Exception:
+            return None  # yt-dlp raised — format unavailable at this quality
 
-        files = glob.glob(os.path.join(tmpdir, "*"))
+        # Accept any file yt-dlp produced, not just known extensions
+        files = [f for f in glob.glob(os.path.join(tmpdir, "*")) if os.path.isfile(f)]
         if not files:
             return None
 
-        filepath = files[0]
-        if os.path.getsize(filepath) / (1024 * 1024) > MAX_FILE_SIZE_MB:
+        filepath = max(files, key=os.path.getsize)  # pick largest if multiple
+        size_mb = os.path.getsize(filepath) / (1024 * 1024)
+        if size_mb > MAX_FILE_SIZE_MB:
             return None
 
         dest = os.path.join(tempfile.gettempdir(), os.path.basename(filepath))
@@ -272,14 +275,16 @@ def setup(tree: app_commands.CommandTree):
             filepath = None
             if quality == "auto":
                 for res in [1080, 720, 480, 360]:
-                    res_msg  = await interaction.followup.send(f"trying {res}p...", wait=True)
+                    res_msg  = await interaction.followup.send(f"Trying {res}p...", wait=True)
                     filepath = await attempt_download(url, res)
                     if filepath:
-                        await res_msg.edit(content=f"Success at {res}p!")
-                        asyncio.create_task(delayed_delete(res_msg, delay=1))
+                        await res_msg.edit(content=f"Downloaded at {res}p!")
+                        asyncio.create_task(delayed_delete(res_msg, delay=2))
                         break
+                    else:
+                        asyncio.create_task(delayed_delete(res_msg, delay=1))
                 else:
-                    await interaction.followup.send("Track is too large to upload even at lowest quality.")
+                    await interaction.followup.send("Too large to upload even at lowest quality.")
                     return
             else:
                 filepath = await attempt_download(url, int(quality))
