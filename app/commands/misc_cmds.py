@@ -7,7 +7,7 @@ import aiohttp
 import discord
 import ai
 import tempfile
-import datetime
+from datetime import datetime
 from fontTools.ttLib import TTFont
 from discord import app_commands
 from PIL import Image, ImageDraw, ImageFont
