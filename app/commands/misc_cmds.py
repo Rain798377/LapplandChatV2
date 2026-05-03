@@ -7,6 +7,7 @@ import aiohttp
 import discord
 import ai
 import tempfile
+import datetime
 from fontTools.ttLib import TTFont
 from discord import app_commands
 from PIL import Image, ImageDraw, ImageFont
@@ -170,6 +171,7 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
     async def quote(interaction: discord.Interaction, message: str, user: discord.User):
         await interaction.response.defer()
 
+        recorded_at = datetime.now().strftime("%B %d, %Y at %I:%M %p")
 
         BASE_DIR       = os.path.dirname(os.path.abspath(__file__))
         FONTS_DIR      = os.path.join(BASE_DIR, "fonts")
@@ -317,9 +319,10 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
         # ── Vertically center text block ──────────────────────────────────────
         line_h   = font_quote.getbbox("Ag")[3] + 10
         name_h   = font_name.getbbox("Ag")[3] + 4
+        recorded_h = font_handle.getbbox("Ag")[3] + 6
         handle_h = font_handle.getbbox("Ag")[3]
         gap      = 14
-        block_h  = line_h * len(wrapped_lines) + gap + name_h + handle_h
+        block_h  = line_h * len(wrapped_lines) + gap + name_h + handle_h + recorded_h
         text_y   = (H - block_h) // 2
 
         cjk_offset_quote  = get_baseline_offset(font_quote,  font_cjk)
@@ -366,6 +369,9 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
         draw_mixed_line_sized(draw, TEXT_X, author_y + name_h,
                               f"@{user.name}",
                               (130, 130, 140), font_handle, font_cjk_handle, cjk_offset_handle)
+        draw_mixed_line_sized(draw, TEXT_X, author_y + name_h + handle_h + 4,
+                              recorded_at,
+                              (90, 90, 100), font_handle, font_cjk_handle, cjk_offset_handle)
         # ── Send ──────────────────────────────────────────────────────────────
         buffer = io.BytesIO()
         img.save(buffer, format="PNG")
@@ -377,6 +383,8 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def make_quote(interaction: discord.Interaction, message: discord.Message):
         await interaction.response.defer()
+
+        recorded_at = message.created_at.strftime("%B %d, %Y at %I:%M %p")
 
         BASE_DIR       = os.path.dirname(os.path.abspath(__file__))
         FONTS_DIR      = os.path.join(BASE_DIR, "fonts")
@@ -524,9 +532,10 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
         # ── Vertically center text block ──────────────────────────────────────
         line_h   = font_quote.getbbox("Ag")[3] + 10
         name_h   = font_name.getbbox("Ag")[3] + 4
+        recorded_h = font_handle.getbbox("Ag")[3] + 6
         handle_h = font_handle.getbbox("Ag")[3]
         gap      = 14
-        block_h  = line_h * len(wrapped_lines) + gap + name_h + handle_h
+        block_h  = line_h * len(wrapped_lines) + gap + name_h + handle_h + recorded_h
         text_y   = (H - block_h) // 2
 
         cjk_offset_quote  = get_baseline_offset(font_quote,  font_cjk)
@@ -573,6 +582,9 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
         draw_mixed_line_sized(draw, TEXT_X, author_y + name_h,
                               f"@{message.author.name}",
                               (130, 130, 140), font_handle, font_cjk_handle, cjk_offset_handle)
+        draw_mixed_line_sized(draw, TEXT_X, author_y + name_h + handle_h + 4,
+                              recorded_at,
+                              (90, 90, 100), font_handle, font_cjk_handle, cjk_offset_handle)
 
         # ── Send ──────────────────────────────────────────────────────────────
         buffer = io.BytesIO()
