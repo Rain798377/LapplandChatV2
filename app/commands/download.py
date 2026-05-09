@@ -48,14 +48,21 @@ def get_video_opts(outtmpl: str, height: int) -> dict:
         "no_warnings": True,
         "noplaylist": True,
         "ignoreerrors": False,
+        # Prefer mp4/m4a streams; fall back to anything at or below target height.
+        # The final /best fallback has no height cap — attempt_download checks size.
         "format": (
             f"bestvideo[ext=mp4][height<={height}]+bestaudio[ext=m4a]"
+            f"/bestvideo[height<={height}]+bestaudio[ext=m4a]"
             f"/bestvideo[height<={height}]+bestaudio"
             f"/best[height<={height}]"
             f"/best"
         ),
-        "merge_output_format": "mp4",  # was "mov" — caused mp42 fallback
-        # removed FFmpegVideoRemuxer postprocessor — yt-dlp handles merging natively
+        # Always remux to mp4 — this kills the mp42/mov container fallback issue.
+        "merge_output_format": "mp4",
+        "postprocessors": [{
+            "key": "FFmpegVideoRemuxer",
+            "preferedformat": "mp4",
+        }],
     }
 
 
@@ -73,32 +80,146 @@ def _first_entry(info: dict | None) -> dict:
 
 # ── Download command helpers ───────────────────────────────────────────────────
 
-async def attempt_download(url: str, height: int) -> str | None:
+def _compress_to_target(src: str, dest: str, target_mb: float, duration_s: float) -> bool:
+    """
+    Re-encode `src` → `dest` (mp4) using a two-pass-style target bitrate so the
+    result fits within `target_mb`. Returns True on success.
+
+    We leave 10 % headroom and allocate ~128 kbps for audio, the rest to video.
+    """
+    import subprocess
+
+    headroom   = 0.90
+    target_bits = target_mb * 1024 * 1024 * 8 * headroom
+    audio_bps   = 128_000
+    video_bps   = max(100_000, int(target_bits / duration_s) - audio_bps)
+
+    cmd = [
+        "ffmpeg", "-y", "-i", src,
+        "-c:v", "libx264", "-b:v", str(video_bps),
+        "-maxrate", str(int(video_bps * 1.5)), "-bufsize", str(video_bps * 2),
+        "-c:a", "aac", "-b:a", "128k",
+        "-movflags", "+faststart",
+        "-f", "mp4", dest,
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=300)
+        return result.returncode == 0 and os.path.exists(dest)
+    except Exception:
+        return False
+
+
+def _get_duration(filepath: str) -> float:
+    """Return duration in seconds via ffprobe, or 0.0 on failure."""
+    import subprocess, json
+    try:
+        out = subprocess.check_output([
+            "ffprobe", "-v", "quiet", "-print_format", "json",
+            "-show_format", filepath,
+        ], timeout=30)
+        return float(json.loads(out)["format"].get("duration", 0))
+    except Exception:
+        return 0.0
+
+
+async def upload_to_filehost(filepath: str) -> str | None:
+    """
+    Upload `filepath` to 0x0.st and return the direct URL, or None on failure.
+    Files expire based on size (large files ~a few days, small ones up to a year).
+    """
+    try:
+        async with aiohttp.ClientSession() as session:
+            with open(filepath, "rb") as f:
+                data = aiohttp.FormData()
+                data.add_field("file", f, filename=os.path.basename(filepath))
+                async with session.post("https://0x0.st", data=data, timeout=aiohttp.ClientTimeout(total=120)) as resp:
+                    if resp.status == 200:
+                        return (await resp.text()).strip()
+    except Exception:
+        pass
+    return None
+
+
+async def attempt_download(
+    url: str,
+    height: int,
+    status_msg=None,
+) -> tuple[str | None, str | None]:
+    """
+    Download the best available stream up to `height`p.
+
+    Returns (filepath, hosted_url) where:
+      - filepath is a local .mp4 ready to attach to Discord (caller must delete), or None
+      - hosted_url is a 0x0.st link used as a last resort when the file is too big
+        to upload directly even after compression, or None
+
+    If both are None the download itself failed.
+    `status_msg` is an optional discord.Message to edit with progress updates.
+    """
+    async def _status(text: str):
+        if status_msg:
+            try:
+                await status_msg.edit(content=text)
+            except Exception:
+                pass
+
     with tempfile.TemporaryDirectory() as tmpdir:
-        ydl_opts = get_video_opts(
-            os.path.join(tmpdir, "%(title).50s.%(ext)s"),
-            height,
-        )
+        outtmpl  = os.path.join(tmpdir, "%(title).50s.%(ext)s")
+        ydl_opts = get_video_opts(outtmpl, height)
 
         loop = asyncio.get_event_loop()
         try:
             await loop.run_in_executor(None, lambda: _run_ydl(ydl_opts, url))
         except Exception:
-            return None  # yt-dlp raised — format unavailable at this quality
+            return None, None
 
-        # Accept any file yt-dlp produced, not just known extensions
         files = [f for f in glob.glob(os.path.join(tmpdir, "*")) if os.path.isfile(f)]
         if not files:
-            return None
+            return None, None
 
-        filepath = max(files, key=os.path.getsize)  # pick largest if multiple
-        size_mb = os.path.getsize(filepath) / (1024 * 1024)
-        if size_mb > MAX_FILE_SIZE_MB:
-            return None
+        src      = max(files, key=os.path.getsize)
+        size_mb  = os.path.getsize(src) / (1024 * 1024)
+        base_name = os.path.splitext(os.path.basename(src))[0] + ".mp4"
 
-        dest = os.path.join(tempfile.gettempdir(), os.path.basename(filepath))
-        shutil.copy2(filepath, dest)
-        return dest
+        # ── Already fits — just copy out ──────────────────────────────────────
+        if size_mb <= MAX_FILE_SIZE_MB:
+            dest = os.path.join(tempfile.gettempdir(), base_name)
+            shutil.copy2(src, dest)
+            return dest, None
+
+        # ── Too big — try FFmpeg compression ─────────────────────────────────
+        await _status(f"File is {size_mb:.1f} MB, compressing to fit under {MAX_FILE_SIZE_MB} MB…")
+        duration = await loop.run_in_executor(None, lambda: _get_duration(src))
+
+        if duration > 0:
+            compressed = os.path.join(tempfile.gettempdir(), "compressed_" + base_name)
+            ok = await loop.run_in_executor(
+                None, lambda: _compress_to_target(src, compressed, MAX_FILE_SIZE_MB, duration)
+            )
+            if ok:
+                comp_size = os.path.getsize(compressed) / (1024 * 1024)
+                if comp_size <= MAX_FILE_SIZE_MB:
+                    return compressed, None
+                # Compression didn't hit target — clean up and fall through
+                try:
+                    os.remove(compressed)
+                except Exception:
+                    pass
+
+        # ── Compression failed / impossible — upload to file host ─────────────
+        await _status(f"Compression couldn't fit under {MAX_FILE_SIZE_MB} MB, uploading to file host…")
+        # Copy src out of the about-to-be-deleted tmpdir first
+        raw_dest = os.path.join(tempfile.gettempdir(), base_name)
+        shutil.copy2(src, raw_dest)
+
+    # tmpdir is now gone; raw_dest is safe
+    hosted_url = await upload_to_filehost(raw_dest)
+    try:
+        os.remove(raw_dest)
+    except Exception:
+        pass
+
+    return None, hosted_url  # signal to caller: send link instead of file
 
 
 async def download_spotify_track(interaction: discord.Interaction, url: str):
@@ -234,16 +355,23 @@ def setup(tree: app_commands.CommandTree):
         app_commands.Choice(name="360p",  value="360"),
         app_commands.Choice(name="auto",  value="auto"),
     ])
-    async def download_media(interaction: discord.Interaction, url: str, quality: str = "auto", audio_only: bool = False, filename: str = ""):
+    async def download_media(
+        interaction: discord.Interaction,
+        url: str,
+        quality: str = "auto",
+        audio_only: bool = False,
+        filename: str = "",
+    ):
         await interaction.response.defer(thinking=True)
 
         if "spotify.com" in url or "open.spotify.com" in url:
             await download_spotify_track(interaction, url)
             return
 
-        # Sanitize custom filename — strip path separators and leading dots
+        # Sanitize custom filename — strip path separators and leading dots.
         clean_filename = re.sub(r'[\\/:*?"<>|]', "_", filename).strip(" .") if filename else ""
 
+        # ── Audio-only path ────────────────────────────────────────────────────
         if audio_only:
             with tempfile.TemporaryDirectory() as tmpdir:
                 ydl_opts = get_audio_opts(os.path.join(tmpdir, "%(title).50s.%(ext)s"))
@@ -263,42 +391,55 @@ def setup(tree: app_commands.CommandTree):
                 filepath = files[0]
                 size_mb  = os.path.getsize(filepath) / (1024 * 1024)
                 if size_mb > MAX_FILE_SIZE_MB:
-                    await interaction.followup.send(f"Audio came out {size_mb:.1f}MB, too big to upload")
+                    await interaction.followup.send(f"Audio came out {size_mb:.1f} MB, too big to upload.")
                     return
 
-                ext = os.path.splitext(filepath)[1]
+                ext          = os.path.splitext(filepath)[1]
                 display_name = f"{clean_filename}{ext}" if clean_filename else os.path.basename(filepath)
                 await interaction.followup.send(file=discord.File(filepath, display_name))
                 return
 
+        # ── Video path ─────────────────────────────────────────────────────────
+        filepath    = None
+        hosted_url  = None
+        status_msg  = await interaction.followup.send("Starting download…", wait=True)
         try:
-            filepath = None
             if quality == "auto":
-                for res in [1080, 720, 480, 360]:
-                    res_msg  = await interaction.followup.send(f"Trying {res}p...", wait=True)
-                    filepath = await attempt_download(url, res)
-                    if filepath:
-                        await res_msg.edit(content=f"Downloaded at {res}p!")
-                        asyncio.create_task(delayed_delete(res_msg, delay=2))
-                        break
-                    else:
-                        asyncio.create_task(delayed_delete(res_msg, delay=1))
-                else:
-                    await interaction.followup.send("Too large to upload even at lowest quality.")
+                # With compression + file-host fallback we only need one pass at
+                # the best available quality — attempt_download handles the rest.
+                filepath, hosted_url = await attempt_download(url, 1080, status_msg)
+                if not filepath and not hosted_url:
+                    await status_msg.edit(content="Download failed — check the URL.")
                     return
             else:
-                filepath = await attempt_download(url, int(quality))
-                if not filepath:
-                    await interaction.followup.send(
-                        f"{quality}p is over Discord's {MAX_FILE_SIZE_MB}MB limit. Try a lower quality or use auto."
+                filepath, hosted_url = await attempt_download(url, int(quality), status_msg)
+                if not filepath and not hosted_url:
+                    await status_msg.edit(
+                        content=f"Couldn't download at {quality}p — check the URL or try **auto**."
                     )
                     return
 
-            ext = os.path.splitext(filepath)[1]
+            if hosted_url:
+                # File was too large even after compression; send external link.
+                await status_msg.edit(
+                    content=f"File too large to attach even after compression.\n🔗 {hosted_url}\n-# Hosted on 0x0.st — link expires after a few days."
+                )
+                return
+
+            # Normal attach path.
+            ext          = os.path.splitext(filepath)[1]
             display_name = f"{clean_filename}{ext}" if clean_filename else os.path.basename(filepath)
+            await status_msg.edit(content="Uploading…")
             await interaction.followup.send(file=discord.File(filepath, display_name))
-            try: os.remove(filepath)
-            except Exception: pass
+            asyncio.create_task(delayed_delete(status_msg, delay=1))
 
         except Exception as e:
             await interaction.followup.send(f"Couldn't download video: `{e}`")
+
+        finally:
+            # Clean up regardless of success or error.
+            if filepath:
+                try:
+                    os.remove(filepath)
+                except Exception:
+                    pass
