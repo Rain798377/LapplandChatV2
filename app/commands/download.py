@@ -80,25 +80,61 @@ def _first_entry(info: dict | None) -> dict:
 
 # ── Download command helpers ───────────────────────────────────────────────────
 
-def _compress_to_target(src: str, dest: str, target_mb: float, duration_s: float) -> bool:
+def _probe(filepath: str) -> tuple[float, int]:
     """
-    Re-encode `src` → `dest` (mp4) using a two-pass-style target bitrate so the
-    result fits within `target_mb`. Returns True on success.
+    Return (duration_seconds, height_px) via ffprobe.
+    Falls back to (0.0, 0) on any error.
+    """
+    import subprocess, json
+    try:
+        out = subprocess.check_output([
+            "ffprobe", "-v", "quiet", "-print_format", "json",
+            "-show_format", "-show_streams", filepath,
+        ], timeout=30)
+        info     = json.loads(out)
+        duration = float(info["format"].get("duration", 0))
+        height   = 0
+        for stream in info.get("streams", []):
+            if stream.get("codec_type") == "video":
+                height = int(stream.get("height", 0))
+                break
+        return duration, height
+    except Exception:
+        return 0.0, 0
 
-    We leave 10 % headroom and allocate ~128 kbps for audio, the rest to video.
+
+def _compress_to_target(src: str, dest: str, target_mb: float, duration_s: float, src_height: int) -> bool:
+    """
+    Re-encode `src` → `dest` (mp4) targeting `target_mb`.
+
+    Speed tricks:
+    - `ultrafast` preset  — ~5-10x faster than default, negligible size difference
+      at low bitrates where we're already crunching hard.
+    - Auto scale-down     — if the required bitrate is very low, drop to a smaller
+      resolution so the encoder isn't wasting cycles on pixels it has no bits for.
+      Thresholds: <500 kbps → 480p, <1000 kbps → 720p, else keep source height.
+    - No -maxrate/-bufsize — those force the encoder to be conservative and slow.
     """
     import subprocess
 
-    headroom   = 0.90
+    headroom    = 0.90
     target_bits = target_mb * 1024 * 1024 * 8 * headroom
-    audio_bps   = 128_000
+    audio_bps   = 96_000   # 96k — inaudible difference at these sizes
     video_bps   = max(100_000, int(target_bits / duration_s) - audio_bps)
+
+    # Pick an output resolution that makes sense for the available bitrate.
+    if src_height > 480 and video_bps < 500_000:
+        scale = "scale=-2:480"
+    elif src_height > 720 and video_bps < 1_000_000:
+        scale = "scale=-2:720"
+    else:
+        scale = "scale=trunc(iw/2)*2:trunc(ih/2)*2"  # ensure even dims, no resize
 
     cmd = [
         "ffmpeg", "-y", "-i", src,
-        "-c:v", "libx264", "-b:v", str(video_bps),
-        "-maxrate", str(int(video_bps * 1.5)), "-bufsize", str(video_bps * 2),
-        "-c:a", "aac", "-b:a", "128k",
+        "-vf", scale,
+        "-c:v", "libx264", "-preset", "ultrafast", "-b:v", str(video_bps),
+        "-c:a", "aac", "-b:a", "96k",
         "-movflags", "+faststart",
         "-f", "mp4", dest,
     ]
@@ -107,19 +143,6 @@ def _compress_to_target(src: str, dest: str, target_mb: float, duration_s: float
         return result.returncode == 0 and os.path.exists(dest)
     except Exception:
         return False
-
-
-def _get_duration(filepath: str) -> float:
-    """Return duration in seconds via ffprobe, or 0.0 on failure."""
-    import subprocess, json
-    try:
-        out = subprocess.check_output([
-            "ffprobe", "-v", "quiet", "-print_format", "json",
-            "-show_format", filepath,
-        ], timeout=30)
-        return float(json.loads(out)["format"].get("duration", 0))
-    except Exception:
-        return 0.0
 
 
 async def upload_to_filehost(filepath: str) -> str | None:
@@ -189,12 +212,12 @@ async def attempt_download(
 
         # ── Too big — try FFmpeg compression ─────────────────────────────────
         await _status(f"File is {size_mb:.1f} MB, compressing to fit under {MAX_FILE_SIZE_MB} MB…")
-        duration = await loop.run_in_executor(None, lambda: _get_duration(src))
+        duration, src_height = await loop.run_in_executor(None, lambda: _probe(src))
 
         if duration > 0:
             compressed = os.path.join(tempfile.gettempdir(), "compressed_" + base_name)
             ok = await loop.run_in_executor(
-                None, lambda: _compress_to_target(src, compressed, MAX_FILE_SIZE_MB, duration)
+                None, lambda: _compress_to_target(src, compressed, MAX_FILE_SIZE_MB, duration, src_height)
             )
             if ok:
                 comp_size = os.path.getsize(compressed) / (1024 * 1024)
