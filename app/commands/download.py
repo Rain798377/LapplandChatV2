@@ -103,6 +103,92 @@ def _probe(filepath: str) -> tuple[float, int]:
         return 0.0, 0
 
 
+def _needs_remux(filepath: str) -> tuple[bool, float]:
+    """
+    Detect broken HE-AACv2 muxing where audio frame duration is 2x inflated.
+
+    HE-AAC uses 2048 samples/frame. A broken mux writes 4096 samples/frame
+    (duration_ts/nb_frames ≈ 4096 at the stream sample rate), causing the
+    video to play at half speed relative to audio.
+
+    Fine HE-AACv2 files have correct ~2048 samples/frame and must not be touched.
+    """
+    import subprocess, json
+    try:
+        out = subprocess.check_output([
+            "ffprobe", "-v", "quiet", "-print_format", "json",
+            "-show_streams", filepath,
+        ], timeout=30)
+        streams = json.loads(out).get("streams", [])
+
+        for s in streams:
+            if s.get("codec_type") == "audio" and s.get("codec_name") == "aac":
+                profile = s.get("profile", "").lower()
+                if "he" not in profile:
+                    continue
+                try:
+                    duration_ts = float(s["duration_ts"])
+                    nb_frames   = float(s["nb_frames"])
+                    samples_per_frame = duration_ts / nb_frames
+                    # HE-AAC correct = ~2048; broken mux = ~4096 (2x inflated)
+                    if samples_per_frame > 3000:   # safely between 2048 and 4096
+                        return True, 0.5
+                except (KeyError, ValueError, ZeroDivisionError):
+                    pass
+
+        return False, 1.0
+    except Exception:
+        return False, 1.0
+
+
+def _remux_fix(src: str, dest: str, pts_mul: float = 1.0) -> bool:
+    """
+    Fix HE-AACv2 A/V desync:
+      1. Decode HE-AACv2 → WAV at native 22050 Hz core rate (correct sample count)
+      2. Re-encode video with setpts=0.5 + encode WAV→AAC-LC at 44100 Hz
+         The WAV has the right number of samples at 22050 Hz; encoding to 44100 Hz
+         resamples up 2x producing exactly the correct duration in the output.
+    """
+    import subprocess, os
+    wav = src + "_audio_raw.wav"
+    try:
+        # Step 1: decode HE-AACv2 to raw PCM at its true core rate
+        # Do NOT let ffmpeg auto-handle SBR — force 22050 Hz output
+        r1 = subprocess.run([
+            "ffmpeg", "-y",
+            "-i", src,
+            "-vn", "-c:a", "pcm_s16le",
+            "-ar", "22050",   # force core rate, not SBR-doubled rate
+            "-ac", "2",
+            wav,
+        ], capture_output=True, timeout=120)
+        if r1.returncode != 0 or not os.path.exists(wav):
+            return False
+
+        # Step 2: setpts on video + encode WAV (22050 Hz) → AAC-LC (44100 Hz)
+        # ffmpeg resamples 22050→44100 which doubles sample count = correct duration
+        r2 = subprocess.run([
+            "ffmpeg", "-y",
+            "-i", src,          # video source
+            "-i", wav,          # corrected audio source (22050 Hz PCM)
+            "-map", "0:v", "-map", "1:a",
+            "-vf", f"setpts={pts_mul:.10g}*PTS",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p",
+            "-video_track_timescale", "90000",
+            "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+            "-movflags", "+faststart",
+            dest,
+        ], capture_output=True, timeout=300)
+        return r2.returncode == 0 and os.path.exists(dest)
+    except Exception:
+        return False
+    finally:
+        try:
+            os.remove(wav)
+        except Exception:
+            pass
+
+
 def _compress_to_target(src: str, dest: str, target_mb: float, duration_s: float, src_height: int) -> bool:
     """
     Re-encode `src` → `dest` (mp4) targeting `target_mb`.
@@ -201,8 +287,18 @@ async def attempt_download(
             return None, None
 
         src      = max(files, key=os.path.getsize)
-        size_mb  = os.path.getsize(src) / (1024 * 1024)
         base_name = os.path.splitext(os.path.basename(src))[0] + ".mp4"
+
+        # ── HE-AAC / bad timebase fix ─────────────────────────────────────────
+        needs_fix, pts_mul = await loop.run_in_executor(None, lambda: _needs_remux(src))
+        if needs_fix:
+            await _status(f"Detected HE-AAC or bad timebase — remuxing (pts×{pts_mul:.4g})…")
+            fixed = os.path.join(tmpdir, "fixed_" + base_name)
+            ok = await loop.run_in_executor(None, lambda: _remux_fix(src, fixed, pts_mul))
+            if ok:
+                src = fixed
+
+        size_mb  = os.path.getsize(src) / (1024 * 1024)
 
         # ── Already fits — just copy out ──────────────────────────────────────
         if size_mb <= MAX_FILE_SIZE_MB:
