@@ -12,6 +12,7 @@ from discord import app_commands
 from config import MAX_FILE_SIZE_MB, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, FILE_SERVER_PATH, FILE_SERVER_BASE_URL, FILE_EXPIRY_SECONDS
 
 
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 async def delayed_delete(*messages, delay: float = 1):
@@ -194,16 +195,27 @@ def _compress_to_target(src: str, dest: str, target_mb: float, duration_s: float
 def copy_to_file_server(src: str) -> str | None:
     """
     Copy `src` to the file server's watched folder, renamed to a random token.
+    Remuxes with faststart so browsers can stream it.
     Returns a direct download URL, or None on failure.
     Schedules auto-deletion after FILE_EXPIRY_SECONDS.
     """
+    import subprocess
     try:
         os.makedirs(FILE_SERVER_PATH, exist_ok=True)
         ext = os.path.splitext(src)[1]  # preserve .mp4 etc.
         token = secrets.token_hex(32)   # 64-char random hex (256-bit)
         hashed_name = token + ext
         dest = os.path.join(FILE_SERVER_PATH, hashed_name)
-        shutil.copy2(src, dest)
+        # Remux with faststart so browsers can stream without downloading the whole file
+        result = subprocess.run([
+            "ffmpeg", "-y", "-i", src,
+            "-c", "copy",
+            "-movflags", "+faststart",
+            dest,
+        ], capture_output=True, timeout=120)
+        if result.returncode != 0 or not os.path.exists(dest):
+            # Fall back to plain copy if remux fails
+            shutil.copy2(src, dest)
         # Schedule deletion after expiry
         asyncio.create_task(_delete_after(dest, FILE_EXPIRY_SECONDS))
         return f"{FILE_SERVER_BASE_URL}/downloads/{hashed_name}"
@@ -278,7 +290,7 @@ async def attempt_download(
             return dest, None
 
         # ── Over limit — compress for Discord, send original to file server ───
-        await _status(f"File is {size_mb:.1f} MB — compressing for Discord and sending original to file server…")
+        await _status(f"File is {size_mb:.1f} MB — compressing video for Discord")
         duration, src_height = await loop.run_in_executor(None, lambda: _probe(src))
 
         # Copy original to file server first (while still in tmpdir)
@@ -523,7 +535,7 @@ def setup(tree: app_commands.CommandTree):
                     # Over 25MB: send compressed to Discord + original link
                     await interaction.followup.send(
                         file=discord.File(filepath, display_name),
-                        content=f"-# Compressed for Discord. Original quality: {fs_url}"
+                        content=f"-# Compressed for Discord. Original quality: <{fs_url}>"
                     )
                 else:
                     # Under 25MB: send normally
@@ -534,7 +546,7 @@ def setup(tree: app_commands.CommandTree):
             elif fs_url:
                 # Compression failed entirely — file server only
                 await status_msg.edit(
-                    content=f"Couldn't compress to fit Discord.\n📁 Original quality: {fs_url}"
+                    content=f"Couldn't compress to fit Discord.\nOriginal quality: <{fs_url}>"
                 )
 
         except Exception as e:
