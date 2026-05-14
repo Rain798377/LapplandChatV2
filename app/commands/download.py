@@ -3,12 +3,14 @@ import re
 import glob
 import shutil
 import asyncio
+import secrets
 import tempfile
 import aiohttp
 import yt_dlp
 import discord
 from discord import app_commands
-from config import MAX_FILE_SIZE_MB, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET
+from config import MAX_FILE_SIZE_MB, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, FILE_SERVER_PATH, FILE_SERVER_BASE_URL, FILE_EXPIRY_SECONDS
+
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -48,8 +50,6 @@ def get_video_opts(outtmpl: str, height: int) -> dict:
         "no_warnings": True,
         "noplaylist": True,
         "ignoreerrors": False,
-        # Prefer mp4/m4a streams; fall back to anything at or below target height.
-        # The final /best fallback has no height cap — attempt_download checks size.
         "format": (
             f"bestvideo[ext=mp4][height<={height}]+bestaudio[ext=m4a]"
             f"/bestvideo[height<={height}]+bestaudio[ext=m4a]"
@@ -57,7 +57,6 @@ def get_video_opts(outtmpl: str, height: int) -> dict:
             f"/best[height<={height}]"
             f"/best"
         ),
-        # Always remux to mp4 — this kills the mp42/mov container fallback issue.
         "merge_output_format": "mp4",
         "postprocessors": [{
             "key": "FFmpegVideoRemuxer",
@@ -67,7 +66,6 @@ def get_video_opts(outtmpl: str, height: int) -> dict:
 
 
 def _first_entry(info: dict | None) -> dict:
-    """Safely unwrap a yt-dlp search result, returning {} on empty/missing entries."""
     if not info:
         return {}
     if "entries" in info:
@@ -81,10 +79,6 @@ def _first_entry(info: dict | None) -> dict:
 # ── Download command helpers ───────────────────────────────────────────────────
 
 def _probe(filepath: str) -> tuple[float, int]:
-    """
-    Return (duration_seconds, height_px) via ffprobe.
-    Falls back to (0.0, 0) on any error.
-    """
     import subprocess, json
     try:
         out = subprocess.check_output([
@@ -104,15 +98,6 @@ def _probe(filepath: str) -> tuple[float, int]:
 
 
 def _needs_remux(filepath: str) -> tuple[bool, float]:
-    """
-    Detect broken HE-AACv2 muxing where audio frame duration is 2x inflated.
-
-    HE-AAC uses 2048 samples/frame. A broken mux writes 4096 samples/frame
-    (duration_ts/nb_frames ≈ 4096 at the stream sample rate), causing the
-    video to play at half speed relative to audio.
-
-    Fine HE-AACv2 files have correct ~2048 samples/frame and must not be touched.
-    """
     import subprocess, json
     try:
         out = subprocess.check_output([
@@ -130,8 +115,7 @@ def _needs_remux(filepath: str) -> tuple[bool, float]:
                     duration_ts = float(s["duration_ts"])
                     nb_frames   = float(s["nb_frames"])
                     samples_per_frame = duration_ts / nb_frames
-                    # HE-AAC correct = ~2048; broken mux = ~4096 (2x inflated)
-                    if samples_per_frame > 3000:   # safely between 2048 and 4096
+                    if samples_per_frame > 3000:
                         return True, 0.5
                 except (KeyError, ValueError, ZeroDivisionError):
                     pass
@@ -142,35 +126,24 @@ def _needs_remux(filepath: str) -> tuple[bool, float]:
 
 
 def _remux_fix(src: str, dest: str, pts_mul: float = 1.0) -> bool:
-    """
-    Fix HE-AACv2 A/V desync:
-      1. Decode HE-AACv2 → WAV at native 22050 Hz core rate (correct sample count)
-      2. Re-encode video with setpts=0.5 + encode WAV→AAC-LC at 44100 Hz
-         The WAV has the right number of samples at 22050 Hz; encoding to 44100 Hz
-         resamples up 2x producing exactly the correct duration in the output.
-    """
     import subprocess, os
     wav = src + "_audio_raw.wav"
     try:
-        # Step 1: decode HE-AACv2 to raw PCM at its true core rate
-        # Do NOT let ffmpeg auto-handle SBR — force 22050 Hz output
         r1 = subprocess.run([
             "ffmpeg", "-y",
             "-i", src,
             "-vn", "-c:a", "pcm_s16le",
-            "-ar", "22050",   # force core rate, not SBR-doubled rate
+            "-ar", "22050",
             "-ac", "2",
             wav,
         ], capture_output=True, timeout=120)
         if r1.returncode != 0 or not os.path.exists(wav):
             return False
 
-        # Step 2: setpts on video + encode WAV (22050 Hz) → AAC-LC (44100 Hz)
-        # ffmpeg resamples 22050→44100 which doubles sample count = correct duration
         r2 = subprocess.run([
             "ffmpeg", "-y",
-            "-i", src,          # video source
-            "-i", wav,          # corrected audio source (22050 Hz PCM)
+            "-i", src,
+            "-i", wav,
             "-map", "0:v", "-map", "1:a",
             "-vf", f"setpts={pts_mul:.10g}*PTS",
             "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p",
@@ -190,31 +163,19 @@ def _remux_fix(src: str, dest: str, pts_mul: float = 1.0) -> bool:
 
 
 def _compress_to_target(src: str, dest: str, target_mb: float, duration_s: float, src_height: int) -> bool:
-    """
-    Re-encode `src` → `dest` (mp4) targeting `target_mb`.
-
-    Speed tricks:
-    - `ultrafast` preset  — ~5-10x faster than default, negligible size difference
-      at low bitrates where we're already crunching hard.
-    - Auto scale-down     — if the required bitrate is very low, drop to a smaller
-      resolution so the encoder isn't wasting cycles on pixels it has no bits for.
-      Thresholds: <500 kbps → 480p, <1000 kbps → 720p, else keep source height.
-    - No -maxrate/-bufsize — those force the encoder to be conservative and slow.
-    """
     import subprocess
 
     headroom    = 0.90
     target_bits = target_mb * 1024 * 1024 * 8 * headroom
-    audio_bps   = 96_000   # 96k — inaudible difference at these sizes
+    audio_bps   = 96_000
     video_bps   = max(100_000, int(target_bits / duration_s) - audio_bps)
 
-    # Pick an output resolution that makes sense for the available bitrate.
     if src_height > 480 and video_bps < 500_000:
         scale = "scale=-2:480"
     elif src_height > 720 and video_bps < 1_000_000:
         scale = "scale=-2:720"
     else:
-        scale = "scale=trunc(iw/2)*2:trunc(ih/2)*2"  # ensure even dims, no resize
+        scale = "scale=trunc(iw/2)*2:trunc(ih/2)*2"
 
     cmd = [
         "ffmpeg", "-y", "-i", src,
@@ -231,22 +192,44 @@ def _compress_to_target(src: str, dest: str, target_mb: float, duration_s: float
         return False
 
 
-async def upload_to_filehost(filepath: str) -> str | None:
+def copy_to_file_server(src: str) -> str | None:
     """
-    Upload `filepath` to 0x0.st and return the direct URL, or None on failure.
-    Files expire based on size (large files ~a few days, small ones up to a year).
+    Copy `src` to the file server's watched folder, renamed to a random token.
+    Remuxes with faststart so browsers can stream it.
+    Returns a direct download URL, or None on failure.
+    Schedules auto-deletion after FILE_EXPIRY_SECONDS.
     """
+    import subprocess
     try:
-        async with aiohttp.ClientSession() as session:
-            with open(filepath, "rb") as f:
-                data = aiohttp.FormData()
-                data.add_field("file", f, filename=os.path.basename(filepath))
-                async with session.post("https://0x0.st", data=data, timeout=aiohttp.ClientTimeout(total=120)) as resp:
-                    if resp.status == 200:
-                        return (await resp.text()).strip()
+        os.makedirs(FILE_SERVER_PATH, exist_ok=True)
+        ext = os.path.splitext(src)[1]  # preserve .mp4 etc.
+        token = secrets.token_hex(32)   # 64-char random hex (256-bit)
+        hashed_name = token + ext
+        dest = os.path.join(FILE_SERVER_PATH, hashed_name)
+        # Remux with faststart so browsers can stream without downloading the whole file
+        result = subprocess.run([
+            "ffmpeg", "-y", "-i", src,
+            "-c", "copy",
+            "-movflags", "+faststart",
+            dest,
+        ], capture_output=True, timeout=120)
+        if result.returncode != 0 or not os.path.exists(dest):
+            # Fall back to plain copy if remux fails
+            shutil.copy2(src, dest)
+        # Schedule deletion after expiry
+        asyncio.create_task(_delete_after(dest, FILE_EXPIRY_SECONDS))
+        return f"{FILE_SERVER_BASE_URL}/downloads/{hashed_name}"
+    except Exception:
+        return None
+
+
+async def _delete_after(filepath: str, delay: float):
+    """Delete `filepath` after `delay` seconds."""
+    await asyncio.sleep(delay)
+    try:
+        os.remove(filepath)
     except Exception:
         pass
-    return None
 
 
 async def attempt_download(
@@ -257,12 +240,12 @@ async def attempt_download(
     """
     Download the best available stream up to `height`p.
 
-    Returns (filepath, hosted_url) where:
-      - filepath is a local .mp4 ready to attach to Discord (caller must delete), or None
-      - hosted_url is a 0x0.st link used as a last resort when the file is too big
-        to upload directly even after compression, or None
+    Pipeline:
+      - Under 25MB  → (filepath, None)       — attach directly to Discord
+      - Over 25MB   → (compressed_path, file_server_url)
+                      compressed goes to Discord, original goes to file server
+      - Both None   → download failed
 
-    If both are None the download itself failed.
     `status_msg` is an optional discord.Message to edit with progress updates.
     """
     async def _status(text: str):
@@ -286,7 +269,7 @@ async def attempt_download(
         if not files:
             return None, None
 
-        src      = max(files, key=os.path.getsize)
+        src       = max(files, key=os.path.getsize)
         base_name = os.path.splitext(os.path.basename(src))[0] + ".mp4"
 
         # ── HE-AAC / bad timebase fix ─────────────────────────────────────────
@@ -298,47 +281,57 @@ async def attempt_download(
             if ok:
                 src = fixed
 
-        size_mb  = os.path.getsize(src) / (1024 * 1024)
+        size_mb = os.path.getsize(src) / (1024 * 1024)
 
-        # ── Already fits — just copy out ──────────────────────────────────────
+        # ── Under limit — send directly ───────────────────────────────────────
         if size_mb <= MAX_FILE_SIZE_MB:
             dest = os.path.join(tempfile.gettempdir(), base_name)
             shutil.copy2(src, dest)
             return dest, None
 
-        # ── Too big — try FFmpeg compression ─────────────────────────────────
-        await _status(f"File is {size_mb:.1f} MB, compressing to fit under {MAX_FILE_SIZE_MB} MB…")
+        # ── Over limit — compress for Discord, send original to file server ───
+        await _status(f"File is {size_mb:.1f} MB — compressing video for Discord")
         duration, src_height = await loop.run_in_executor(None, lambda: _probe(src))
 
-        if duration > 0:
-            compressed = os.path.join(tempfile.gettempdir(), "compressed_" + base_name)
-            ok = await loop.run_in_executor(
-                None, lambda: _compress_to_target(src, compressed, MAX_FILE_SIZE_MB, duration, src_height)
-            )
-            if ok:
-                comp_size = os.path.getsize(compressed) / (1024 * 1024)
-                if comp_size <= MAX_FILE_SIZE_MB:
-                    return compressed, None
-                # Compression didn't hit target — clean up and fall through
-                try:
-                    os.remove(compressed)
-                except Exception:
-                    pass
-
-        # ── Compression failed / impossible — upload to file host ─────────────
-        await _status(f"Compression couldn't fit under {MAX_FILE_SIZE_MB} MB, uploading to file host…")
-        # Copy src out of the about-to-be-deleted tmpdir first
+        # Copy original to file server first (while still in tmpdir)
+        file_server_url: str | None = None
         raw_dest = os.path.join(tempfile.gettempdir(), base_name)
         shutil.copy2(src, raw_dest)
 
-    # tmpdir is now gone; raw_dest is safe
-    hosted_url = await upload_to_filehost(raw_dest)
-    try:
-        os.remove(raw_dest)
-    except Exception:
-        pass
+    # tmpdir gone — work with raw_dest from here
+    # Copy to file server first so we have the original safe
+    file_server_url = copy_to_file_server(raw_dest)
 
-    return None, hosted_url  # signal to caller: send link instead of file
+    # Now compress from raw_dest for Discord
+    if duration > 0:
+        compressed = os.path.join(tempfile.gettempdir(), "compressed_" + base_name)
+        ok = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: _compress_to_target(raw_dest, compressed, MAX_FILE_SIZE_MB, duration, src_height)
+        )
+
+        try:
+            os.remove(raw_dest)
+        except Exception:
+            pass
+
+        if ok:
+            comp_size = os.path.getsize(compressed) / (1024 * 1024)
+            if comp_size <= MAX_FILE_SIZE_MB:
+                # Compressed for Discord + original on file server
+                return compressed, file_server_url
+
+            try:
+                os.remove(compressed)
+            except Exception:
+                pass
+    else:
+        try:
+            os.remove(raw_dest)
+        except Exception:
+            pass
+
+    # Compression failed/impossible — file server only, nothing for Discord
+    return None, file_server_url
 
 
 async def download_spotify_track(interaction: discord.Interaction, url: str):
@@ -487,7 +480,6 @@ def setup(tree: app_commands.CommandTree):
             await download_spotify_track(interaction, url)
             return
 
-        # Sanitize custom filename — strip path separators and leading dots.
         clean_filename = re.sub(r'[\\/:*?"<>|]', "_", filename).strip(" .") if filename else ""
 
         # ── Audio-only path ────────────────────────────────────────────────────
@@ -519,44 +511,48 @@ def setup(tree: app_commands.CommandTree):
                 return
 
         # ── Video path ─────────────────────────────────────────────────────────
-        filepath    = None
-        hosted_url  = None
-        status_msg  = await interaction.followup.send("Starting download…", wait=True)
+        filepath   = None
+        fs_url     = None
+        status_msg = await interaction.followup.send("Starting download…", wait=True)
         try:
-            if quality == "auto":
-                # With compression + file-host fallback we only need one pass at
-                # the best available quality — attempt_download handles the rest.
-                filepath, hosted_url = await attempt_download(url, 1080, status_msg)
-                if not filepath and not hosted_url:
-                    await status_msg.edit(content="Download failed — check the URL.")
-                    return
-            else:
-                filepath, hosted_url = await attempt_download(url, int(quality), status_msg)
-                if not filepath and not hosted_url:
-                    await status_msg.edit(
-                        content=f"Couldn't download at {quality}p — check the URL or try **auto**."
-                    )
-                    return
+            target_height = 1080 if quality == "auto" else int(quality)
+            filepath, fs_url = await attempt_download(url, target_height, status_msg)
 
-            if hosted_url:
-                # File was too large even after compression; send external link.
+            if not filepath and not fs_url:
                 await status_msg.edit(
-                    content=f"File too large to attach even after compression.\n🔗 {hosted_url}\n-# Hosted on 0x0.st — link expires after a few days."
+                    content="Download failed — check the URL."
+                    if quality == "auto"
+                    else f"Couldn't download at {quality}p — check the URL or try **auto**."
                 )
                 return
 
-            # Normal attach path.
-            ext          = os.path.splitext(filepath)[1]
-            display_name = f"{clean_filename}{ext}" if clean_filename else os.path.basename(filepath)
-            await status_msg.edit(content="Uploading…")
-            await interaction.followup.send(file=discord.File(filepath, display_name))
-            asyncio.create_task(delayed_delete(status_msg, delay=1))
+            if filepath:
+                ext          = os.path.splitext(filepath)[1]
+                display_name = f"{clean_filename}{ext}" if clean_filename else os.path.basename(filepath)
+                await status_msg.edit(content="Uploading…")
+
+                if fs_url:
+                    # Over 25MB: send compressed to Discord + original link
+                    await interaction.followup.send(
+                        file=discord.File(filepath, display_name),
+                        content=f"-# Compressed for Discord. Original quality: <{fs_url}>"
+                    )
+                else:
+                    # Under 25MB: send normally
+                    await interaction.followup.send(file=discord.File(filepath, display_name))
+
+                asyncio.create_task(delayed_delete(status_msg, delay=1))
+
+            elif fs_url:
+                # Compression failed entirely — file server only
+                await status_msg.edit(
+                    content=f"Couldn't compress to fit Discord.\nOriginal quality: <{fs_url}>"
+                )
 
         except Exception as e:
             await interaction.followup.send(f"Couldn't download video: `{e}`")
 
         finally:
-            # Clean up regardless of success or error.
             if filepath:
                 try:
                     os.remove(filepath)
