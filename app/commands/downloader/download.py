@@ -9,8 +9,8 @@ import aiohttp
 import yt_dlp
 import discord
 from discord import app_commands
-from config import MAX_FILE_SIZE_MB, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, FILE_SERVER_PATH, FILE_SERVER_BASE_URL, FILE_EXPIRY_SECONDS
-from .video_fix import _probe, _needs_remux, _remux_fix, _fix_video_pts, _compress_to_target  # CHANGED
+from config import MAX_FILE_SIZE_MB, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, FILE_SERVER_PATH, FILE_SERVER_BASE_URL, FILE_EXPIRY_SECONDS, NORMALIZE_AUDIO  # CHANGED
+from .video_fix import _probe, _needs_remux, _remux_fix, _fix_video_pts, _compress_to_target, _normalize_audio  # CHANGED
 
 
 
@@ -128,6 +128,7 @@ async def attempt_download(
     height: int,
     status_msg=None,
     clean_filename: str = "",
+    normalize: bool = False,  # CHANGED
 ) -> tuple[str | None, str | None]:
     """
     Download the best available stream up to `height`p.
@@ -179,6 +180,14 @@ async def attempt_download(
             if ok:
                 src = fixed
 
+        # ── Audio normalization ───────────────────────────────────────────────
+        if normalize:                                                              # CHANGED
+            await _status("Normalizing audio…")                                   # CHANGED
+            normed = os.path.join(tmpdir, "normed_" + base_name)                  # CHANGED
+            ok = await loop.run_in_executor(None, lambda: _normalize_audio(src, normed))  # CHANGED
+            if ok:                                                                 # CHANGED
+                src = normed                                                       # CHANGED
+
         size_mb = os.path.getsize(src) / (1024 * 1024)
 
         # ── Under limit — send directly ───────────────────────────────────────
@@ -226,7 +235,7 @@ async def attempt_download(
     return None, file_server_url
 
 
-async def download_spotify_track(interaction: discord.Interaction, url: str):
+async def download_spotify_track(interaction: discord.Interaction, url: str, normalize: bool = False):  # CHANGED
     status = await interaction.followup.send("Detected Spotify link, fetching track info...", wait=True)
 
     try:
@@ -313,6 +322,16 @@ async def download_spotify_track(interaction: discord.Interaction, url: str):
                         break
 
                     filepath = files[0]
+
+                    # ── Audio normalization (Spotify path) ────────────────────
+                    if normalize:                                                  # CHANGED
+                        normed_path = os.path.join(tmpdir, "normed_" + os.path.basename(filepath))  # CHANGED
+                        ok = await asyncio.get_event_loop().run_in_executor(      # CHANGED
+                            None, lambda p=filepath, n=normed_path: _normalize_audio(p, n)  # CHANGED
+                        )                                                          # CHANGED
+                        if ok:                                                     # CHANGED
+                            filepath = normed_path                                 # CHANGED
+
                     size_mb  = os.path.getsize(filepath) / (1024 * 1024)
 
                     if size_mb <= MAX_FILE_SIZE_MB:
@@ -350,7 +369,8 @@ def setup(tree: app_commands.CommandTree):
         url="The link to download from",
         quality="Video quality (default: auto picks best quality under file size limit)",
         audio_only="Extract audio only (mp3)",
-        filename="Custom filename (without extension)"
+        filename="Custom filename (without extension)",
+        normalize="Normalize audio loudness to -14 LUFS (default: per config)",  # CHANGED
     )
     @app_commands.choices(quality=[
         app_commands.Choice(name="1080p", value="1080"),
@@ -365,11 +385,12 @@ def setup(tree: app_commands.CommandTree):
         quality: str = "auto",
         audio_only: bool = False,
         filename: str = "",
+        normalize: bool = NORMALIZE_AUDIO,  # CHANGED
     ):
         await interaction.response.defer(thinking=True)
 
         if "spotify.com" in url or "open.spotify.com" in url:
-            await download_spotify_track(interaction, url)
+            await download_spotify_track(interaction, url, normalize)  # CHANGED
             return
 
         clean_filename = re.sub(r'[\\/:*?"<>|]', "_", filename).strip(" .") if filename else ""
@@ -392,6 +413,14 @@ def setup(tree: app_commands.CommandTree):
                     return
 
                 filepath = files[0]
+
+                # ── Audio normalization (audio-only path) ─────────────────────
+                if normalize:                                                      # CHANGED
+                    normed = os.path.join(tmpdir, "normed_" + os.path.basename(filepath))  # CHANGED
+                    ok = await loop.run_in_executor(None, lambda: _normalize_audio(filepath, normed))  # CHANGED
+                    if ok:                                                         # CHANGED
+                        filepath = normed                                          # CHANGED
+
                 size_mb  = os.path.getsize(filepath) / (1024 * 1024)
                 if size_mb > MAX_FILE_SIZE_MB:
                     await interaction.followup.send(f"Audio came out {size_mb:.1f} MB, too big to upload.")
@@ -408,7 +437,7 @@ def setup(tree: app_commands.CommandTree):
         status_msg = await interaction.followup.send("Starting download…", wait=True)
         try:
             target_height = 1080 if quality == "auto" else int(quality)
-            filepath, fs_url = await attempt_download(url, target_height, status_msg, clean_filename)
+            filepath, fs_url = await attempt_download(url, target_height, status_msg, clean_filename, normalize)  # CHANGED
 
             if not filepath and not fs_url:
                 await status_msg.edit(
