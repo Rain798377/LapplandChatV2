@@ -97,32 +97,224 @@ def _probe(filepath: str) -> tuple[float, int]:
         return 0.0, 0
 
 
-def _needs_remux(filepath: str) -> tuple[bool, float]:
-    import subprocess, json
+def _needs_remux(filepath: str) -> tuple[bool, float, str]:
+    """
+    Detect whether a file has timing problems that require a remux.
+
+    Returns (needs_fix: bool, pts_mul: float, fix_type: str) where:
+      - pts_mul  : video PTS multiplier to apply during the fix
+      - fix_type : "audio"  → broken audio; use _remux_fix (re-encodes audio from PCM)
+                   "video"  → broken video PTS; use _fix_video_pts (re-encodes video,
+                              copies audio untouched)
+
+    Detection covers five independent failure modes, checked in priority order:
+
+    ── CASE 1: Explicit HE-AAC (existing behaviour, unchanged) ──────────────
+    Profile string contains "he" (e.g. "HE-AAC v1", "HE-AAC v2").
+    The SBR layer doubles the effective sample rate, so the muxed audio
+    timestamps run at 2× real-time.  Fix: slow video by 0.5× (audio fix path).
+
+    ── CASE 2: Implicit SBR / LC-labelled HE-AAC ────────────────────────────
+    Some encoders (iOS screen recorder, libfdk_aac in certain modes, many
+    Android/OEM encoders) write profile=LC in the MPEG-4 Audio Object Type
+    (AOT 2) even though SBR is active.  ffprobe reports "LC" because it reads
+    the AOT, not the decoded frame behaviour.
+
+    Signature: profile == "LC" but average audio samples/frame is in
+    [1200, 2200] — well above the standard AAC-LC window of 1024 but below
+    the HE-AAC v2 ceiling of ~2048.  The old threshold of >3000 completely
+    missed this range.
+
+    Guard: only act when the stream durations are actually misaligned
+    (audio_dur / video_dur > 1.4 or < 0.71).  A well-muxed file can have
+    ~2048 spf (SBR present but correctly timestamped) while durations match
+    perfectly — that is NOT broken and must not be touched.
+
+    Fix: re-encode audio from decoded PCM (audio fix path); pts_mul =
+    audio_dur / video_dur so any residual drift is absorbed.
+
+    ── CASE 3: Edit-list / encoder-delay mismatch ───────────────────────────
+    The MP4 edit list (elst box) trims the video start by T_v seconds, while
+    the audio track has an encoder pre-roll of T_a seconds (negative start
+    PTS).  When T_a ≠ T_v the streams are misaligned by (T_a − T_v).
+
+    Fix: audio fix path, pts_mul = 1.0 (re-encode normalises timestamps).
+
+    ── CASE 4: Variable audio frame duration ────────────────────────────────
+    A well-formed AAC-LC stream has exactly 1024 samples per frame.
+    High coefficient of variation (std_dev / mean > 0.15) signals broken
+    muxer timing.
+
+    Fix: audio fix path, pts_mul computed from actual durations.
+
+    ── CASE 5: Video / audio duration mismatch (video PTS wrong) ────────────
+    Occurs when yt-dlp merges streams whose PTS were never aligned — most
+    commonly a DASH video track stamped with doubled timestamps (e.g. the
+    source was 30 fps but the container claims 60 fps with the original 30-fps
+    PTS values, making every frame appear twice as long).  Symptom: video plays
+    at half speed while audio is perfectly normal.
+
+    Signature: video_dur / audio_dur > 1.4   (video is at least 40% longer
+               than audio — way outside any normal encoder-delay margin).
+
+    Fix: video fix path — re-encode video with setpts=(audio_dur/video_dur)*PTS
+    so timestamps are squished to match audio exactly.  Audio is stream-copied
+    untouched.  pts_mul = audio_dur / video_dur (e.g. 0.5 for 2× slow video).
+    """
+    import subprocess, json, statistics
+
     try:
-        out = subprocess.check_output([
+        # ── Full stream + packet metadata ────────────────────────────────────
+        stream_out = subprocess.check_output([
             "ffprobe", "-v", "quiet", "-print_format", "json",
-            "-show_streams", filepath,
+            "-show_streams", "-show_format", filepath,
         ], timeout=30)
-        streams = json.loads(out).get("streams", [])
+        stream_data = json.loads(stream_out)
+        streams = stream_data.get("streams", [])
 
-        for s in streams:
-            if s.get("codec_type") == "audio" and s.get("codec_name") == "aac":
-                profile = s.get("profile", "").lower()
-                if "he" not in profile:
-                    continue
-                try:
-                    duration_ts = float(s["duration_ts"])
-                    nb_frames   = float(s["nb_frames"])
-                    samples_per_frame = duration_ts / nb_frames
-                    if samples_per_frame > 3000:
-                        return True, 0.5
-                except (KeyError, ValueError, ZeroDivisionError):
-                    pass
+        audio_stream = next((s for s in streams if s.get("codec_type") == "audio"), None)
+        video_stream = next((s for s in streams if s.get("codec_type") == "video"), None)
 
-        return False, 1.0
+        if not audio_stream:
+            return False, 1.0, "audio"
+
+        # ── Stream duration helper ────────────────────────────────────────────
+        def _stream_duration_s(s: dict) -> float:
+            d = s.get("duration")
+            if d and d != "N/A":
+                return float(d)
+            ts = s.get("duration_ts")
+            tb = s.get("time_base", "1/1")
+            if ts and tb:
+                num, den = (int(x) for x in tb.split("/"))
+                return int(ts) * num / den
+            return 0.0
+
+        audio_dur_s = _stream_duration_s(audio_stream)
+        video_dur_s = _stream_duration_s(video_stream) if video_stream else 0.0
+
+        # ── CASE 5: Video/audio duration mismatch ────────────────────────────
+        # Check this FIRST — it is a video-side bug and must not be confused
+        # with the audio-side bugs in Cases 1-4.  If the video track is more
+        # than 40% longer than the audio track, the video PTS are wrong.
+        # The fix is purely on the video side (audio stream-copied as-is).
+        # A 40% threshold safely clears normal encoder-delay margins (which are
+        # never more than ~100ms) while catching 2×, 1.5× and other multiples.
+        if audio_dur_s > 1.0 and video_dur_s > 1.0:
+            ratio = video_dur_s / audio_dur_s
+            if ratio > 1.4:
+                pts_mul = audio_dur_s / video_dur_s  # e.g. 0.5 for 2× slow video
+                return True, pts_mul, "video"
+
+        # ── Raw audio packet durations ────────────────────────────────────────
+        pkt_out = subprocess.check_output([
+            "ffprobe", "-v", "quiet", "-print_format", "json",
+            "-show_packets", "-select_streams", "a:0", filepath,
+        ], timeout=60)
+        pkt_data  = json.loads(pkt_out)
+        packets   = pkt_data.get("packets", [])
+        durations = [int(p["duration"]) for p in packets if p.get("duration") not in (None, "N/A")]
+
+        if not durations:
+            return False, 1.0, "audio"
+
+        profile         = audio_stream.get("profile", "").lower()
+        sample_rate     = int(audio_stream.get("sample_rate", 44100))
+        audio_start_pts = int(audio_stream.get("start_pts", 0))
+
+        # Prefer measured packet data over metadata claims
+        total_ts_measured  = sum(durations)
+        nb_frames_measured = len(durations)
+        samples_per_frame  = total_ts_measured / nb_frames_measured
+
+        # ── CASE 1: Explicit HE-AAC (unchanged from original) ────────────────
+        if "he" in profile:
+            if samples_per_frame > 3000:
+                return True, 0.5, "audio"
+            # Explicit HE-AAC but frame size not wildly doubled — fall through.
+
+        # ── CASE 2: Implicit SBR / LC-labelled HE-AAC ────────────────────────
+        # Standard AAC-LC = 1024 samples/frame.
+        # HE-AAC (with or without explicit profile label) produces ~2048.
+        # Threshold 1200 safely separates 1024 (good) from 2048 (bad),
+        # catching slightly-off values like 2042 that the old >3000 missed.
+        #
+        # Guard: a well-muxed file can legitimately have ~2048 spf while its
+        # stream durations are perfectly matched (SBR present but correctly
+        # timestamped).  Only act when streams are actually misaligned.
+        if 1200 < samples_per_frame <= 2200:
+            if audio_dur_s > 1.0 and video_dur_s > 1.0:
+                ratio = audio_dur_s / video_dur_s
+                if ratio > 1.4 or ratio < 0.71:
+                    pts_mul = ratio  # audio_dur / video_dur absorbs the drift
+                    return True, pts_mul, "audio"
+                # else: durations are aligned — SBR present but mux is fine
+            else:
+                # No reliable duration info — assume broken, use safe fallback
+                return True, 0.5, "audio"
+
+        # ── CASE 2b: Inflated duration_ts on genuine AAC-LC ──────────────────
+        # Some muxers (CapCut and similar) write corrupt per-frame duration_ts
+        # values in the audio sample table even though the bitstream is genuine
+        # AAC-LC (1024 samples/frame, no SBR).  The inflation factor is not
+        # necessarily exactly 2× — this file uses 1965 instead of 1024 (≈1.92×).
+        #
+        # The container-level audio duration looks plausible because it is
+        # derived from the same inflated duration_ts values, so the audio/video
+        # ratio appears normal (~1.0).  The only way to catch this is to compute
+        # the REAL audio duration from the frame count:
+        #
+        #   real_audio_dur = nb_frames * 1024 / sample_rate
+        #
+        # If real_audio_dur is significantly shorter than video_dur the
+        # timestamps are lying.  The _remux_fix path decodes to PCM (ignoring
+        # the broken timestamps entirely) so pts_mul = real_audio_dur / video_dur
+        # corrects the video speed to match the true audio length.
+        #
+        # Only runs when profile is "lc" or unknown — explicit HE-AAC is
+        # already handled by Case 1, and Case 2 above covers implicit SBR.
+        if "he" not in profile and video_dur_s > 1.0 and nb_frames_measured >= 10:
+            real_audio_dur_s = nb_frames_measured * 1024 / sample_rate
+            real_ratio = real_audio_dur_s / video_dur_s
+            if real_ratio < 0.71:
+                pts_mul = real_ratio  # video slowed to match true audio length
+                return True, pts_mul, "audio"
+
+        # ── CASE 3: Edit-list / encoder-delay mismatch ───────────────────────
+        encoder_delay_threshold_pts = sample_rate * 0.010  # 10 ms
+        if audio_start_pts < -encoder_delay_threshold_pts:
+            trace_out = subprocess.run(
+                ["ffprobe", "-v", "trace", filepath],
+                capture_output=True, text=True, timeout=15,
+            )
+            trace = trace_out.stderr + trace_out.stdout
+            has_edit_list = "type:'elst'" in trace
+            if has_edit_list:
+                import re as _re
+                match = _re.search(r"media time:\s*([\d.]+)", trace)
+                if match:
+                    video_tb_den = int(video_stream.get("time_base", "1/15360").split("/")[1]) if video_stream else 15360
+                    video_edit_offset_s = float(match.group(1)) / video_tb_den
+                    audio_preroll_s = abs(audio_start_pts) / sample_rate
+                    drift_s = abs(audio_preroll_s - video_edit_offset_s)
+                    if drift_s > 0.010:
+                        return True, 1.0, "audio"
+                else:
+                    return True, 1.0, "audio"
+
+        # ── CASE 4: Variable audio frame duration ────────────────────────────
+        if len(durations) >= 10:
+            mean_dur  = statistics.mean(durations)
+            stdev_dur = statistics.stdev(durations)
+            cv        = stdev_dur / mean_dur if mean_dur else 0.0
+            if cv > 0.15:
+                pts_mul = (audio_dur_s / video_dur_s) if (audio_dur_s > 0 and video_dur_s > 0) else 1.0
+                return True, pts_mul, "audio"
+
+        return False, 1.0, "audio"
+
     except Exception:
-        return False, 1.0
+        return False, 1.0, "audio"
 
 
 def _remux_fix(src: str, dest: str, pts_mul: float = 1.0) -> bool:
@@ -160,6 +352,38 @@ def _remux_fix(src: str, dest: str, pts_mul: float = 1.0) -> bool:
             os.remove(wav)
         except Exception:
             pass
+
+
+def _fix_video_pts(src: str, dest: str, pts_mul: float) -> bool:
+    """
+    Fix broken video PTS by re-encoding the video stream with a setpts multiplier
+    while stream-copying the audio exactly as-is.
+
+    Use this when the video is the broken side (e.g. video plays 2× too slow
+    because PTS were stamped at double the correct rate).  Unlike _remux_fix,
+    this never touches the audio — it is already correct and should not be
+    resampled or re-encoded.
+
+    pts_mul examples:
+      0.5  → video was 2× too slow; squish PTS in half → plays at correct speed
+      0.75 → video was 1.33× too slow; etc.
+    """
+    import subprocess, os
+    try:
+        result = subprocess.run([
+            "ffmpeg", "-y",
+            "-i", src,
+            "-map", "0:v", "-map", "0:a",
+            "-vf", f"setpts={pts_mul:.10g}*PTS",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p",
+            "-video_track_timescale", "90000",
+            "-c:a", "copy",          # audio is correct — do not touch it
+            "-movflags", "+faststart",
+            dest,
+        ], capture_output=True, timeout=300)
+        return result.returncode == 0 and os.path.exists(dest)
+    except Exception:
+        return False
 
 
 def _compress_to_target(src: str, dest: str, target_mb: float, duration_s: float, src_height: int) -> bool:
@@ -282,12 +506,17 @@ async def attempt_download(
         src       = max(files, key=os.path.getsize)
         base_name = os.path.splitext(os.path.basename(src))[0] + ".mp4"
 
-        # ── HE-AAC / bad timebase fix ─────────────────────────────────────────
-        needs_fix, pts_mul = await loop.run_in_executor(None, lambda: _needs_remux(src))
+        # ── HE-AAC / bad timebase / wrong video PTS fix ───────────────────────
+        needs_fix, pts_mul, fix_type = await loop.run_in_executor(None, lambda: _needs_remux(src))
         if needs_fix:
-            await _status(f"Detected HE-AAC or bad timebase — remuxing (pts×{pts_mul:.4g})…")
-            fixed = os.path.join(tmpdir, "fixed_" + base_name)
-            ok = await loop.run_in_executor(None, lambda: _remux_fix(src, fixed, pts_mul))
+            if fix_type == "video":
+                await _status(f"Detected video PTS mismatch — fixing video speed (pts×{pts_mul:.4g})…")
+                fixed = os.path.join(tmpdir, "fixed_" + base_name)
+                ok = await loop.run_in_executor(None, lambda: _fix_video_pts(src, fixed, pts_mul))
+            else:
+                await _status(f"Detected audio timing issue — remuxing (pts×{pts_mul:.4g})…")
+                fixed = os.path.join(tmpdir, "fixed_" + base_name)
+                ok = await loop.run_in_executor(None, lambda: _remux_fix(src, fixed, pts_mul))
             if ok:
                 src = fixed
 
