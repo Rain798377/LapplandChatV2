@@ -171,9 +171,9 @@ def _needs_remux(filepath: str) -> tuple[bool, float, str]:
         if audio_start_pts < -encoder_delay_threshold_pts:
             trace_out = subprocess.run(
                 ["ffprobe", "-v", "trace", filepath],
-                capture_output=True, text=True, timeout=15,
+                capture_output=True, timeout=15,
             )
-            trace = trace_out.stderr + trace_out.stdout
+            trace = trace_out.stderr.decode("utf-8", errors="replace") + trace_out.stdout.decode("utf-8", errors="replace")
             has_edit_list = "type:'elst'" in trace
             if has_edit_list:
                 import re as _re
@@ -268,6 +268,84 @@ def _fix_video_pts(src: str, dest: str, pts_mul: float) -> bool:
         return result.returncode == 0 and os.path.exists(dest)
     except Exception:
         return False
+
+
+def _normalize_audio(src: str, dest: str) -> bool:
+    """
+    Two-pass EBU R128 loudnorm to -14 LUFS.
+
+    Branches on whether the source has a video stream:
+      - Audio-only (MP3, etc.): decoded -> loudnorm -> re-encoded MP3, same
+        container/extension as src. No size bloat from re-containerizing.
+      - Video: audio loudnorm + -c:v copy, output is MP4.
+
+    Returns True on success. On failure dest is not written.
+    """
+    # -- Detect whether source has a video stream -----------------------------
+    try:
+        probe = subprocess.check_output([
+            "ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", src,
+        ], timeout=30)
+        streams = json.loads(probe).get("streams", [])
+        has_video = any(s.get("codec_type") == "video" for s in streams)
+    except Exception:
+        has_video = False
+
+    # -- Pass 1: measure ------------------------------------------------------
+    try:
+        r1 = subprocess.run([
+            "ffmpeg", "-y", "-i", src,
+            "-af", "loudnorm=I=-14:TP=-1.5:LRA=11:print_format=json",
+            "-f", "null", "-",
+        ], capture_output=True, timeout=300)
+
+        stderr = r1.stderr.decode("utf-8", errors="replace")
+        start  = stderr.rfind("{")
+        end    = stderr.rfind("}") + 1
+        if start == -1 or end == 0:
+            return False
+        stats = json.loads(stderr[start:end])
+    except Exception:
+        return False
+
+    # -- Pass 2: apply --------------------------------------------------------
+    af = (
+        f"loudnorm=I=-14:TP=-1.5:LRA=11"
+        f":measured_I={stats['input_i']}"
+        f":measured_TP={stats['input_tp']}"
+        f":measured_LRA={stats['input_lra']}"
+        f":measured_thresh={stats['input_thresh']}"
+        f":offset={stats['target_offset']}"
+        f":linear=true:print_format=summary"
+    )
+
+    try:
+        if has_video:
+            cmd = [
+                "ffmpeg", "-y", "-i", src,
+                "-af", af,
+                "-c:v", "copy",
+                "-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2",
+                "-movflags", "+faststart",
+                dest,
+            ]
+        else:
+            # Audio-only: decode -> loudnorm -> MP3, no container change
+            src_ext = os.path.splitext(src)[1].lower()
+            codec   = "libmp3lame" if src_ext == ".mp3" else "aac"
+            bitrate = "320k"       if src_ext == ".mp3" else "192k"
+            cmd = [
+                "ffmpeg", "-y", "-i", src,
+                "-af", af,
+                "-c:a", codec, "-b:a", bitrate, "-ar", "44100", "-ac", "2",
+                "-vn",
+                dest,
+            ]
+        r2 = subprocess.run(cmd, capture_output=True, timeout=300)
+        return r2.returncode == 0 and os.path.exists(dest)
+    except Exception:
+        return False
+
 
 
 def _compress_to_target(src: str, dest: str, target_mb: float, duration_s: float, src_height: int) -> bool:
