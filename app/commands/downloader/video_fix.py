@@ -1,0 +1,298 @@
+import os
+import json
+import statistics
+import subprocess
+
+
+def _probe(filepath: str) -> tuple[float, int]:
+    try:
+        out = subprocess.check_output([
+            "ffprobe", "-v", "quiet", "-print_format", "json",
+            "-show_format", "-show_streams", filepath,
+        ], timeout=30)
+        info     = json.loads(out)
+        duration = float(info["format"].get("duration", 0))
+        height   = 0
+        for stream in info.get("streams", []):
+            if stream.get("codec_type") == "video":
+                height = int(stream.get("height", 0))
+                break
+        return duration, height
+    except Exception:
+        return 0.0, 0
+
+
+def _needs_remux(filepath: str) -> tuple[bool, float, str]:
+    """
+    Detect whether a file has timing problems that require a remux.
+
+    Returns (needs_fix: bool, pts_mul: float, fix_type: str) where:
+      - pts_mul  : video PTS multiplier to apply during the fix
+      - fix_type : "audio"  → broken audio; use _remux_fix (re-encodes audio from PCM)
+                   "video"  → broken video PTS; use _fix_video_pts (re-encodes video,
+                              copies audio untouched)
+
+    Detection covers five independent failure modes, checked in priority order:
+
+    ── CASE 1: Explicit HE-AAC (existing behaviour, unchanged) ──────────────
+    Profile string contains "he" (e.g. "HE-AAC v1", "HE-AAC v2").
+    The SBR layer doubles the effective sample rate, so the muxed audio
+    timestamps run at 2× real-time.  Fix: slow video by 0.5× (audio fix path).
+
+    ── CASE 2: Implicit SBR / LC-labelled HE-AAC ────────────────────────────
+    Some encoders (iOS screen recorder, libfdk_aac in certain modes, many
+    Android/OEM encoders) write profile=LC in the MPEG-4 Audio Object Type
+    (AOT 2) even though SBR is active.  ffprobe reports "LC" because it reads
+    the AOT, not the decoded frame behaviour.
+
+    Signature: profile == "LC" but average audio samples/frame is in
+    [1200, 2200] — well above the standard AAC-LC window of 1024 but below
+    the HE-AAC v2 ceiling of ~2048.  The old threshold of >3000 completely
+    missed this range.
+
+    Guard: only act when the stream durations are actually misaligned
+    (audio_dur / video_dur > 1.4 or < 0.71).  A well-muxed file can have
+    ~2048 spf (SBR present but correctly timestamped) while durations match
+    perfectly — that is NOT broken and must not be touched.
+
+    Fix: re-encode audio from decoded PCM (audio fix path); pts_mul =
+    audio_dur / video_dur so any residual drift is absorbed.
+
+    ── CASE 3: Edit-list / encoder-delay mismatch ───────────────────────────
+    The MP4 edit list (elst box) trims the video start by T_v seconds, while
+    the audio track has an encoder pre-roll of T_a seconds (negative start
+    PTS).  When T_a ≠ T_v the streams are misaligned by (T_a − T_v).
+
+    Fix: audio fix path, pts_mul = 1.0 (re-encode normalises timestamps).
+
+    ── CASE 4: Variable audio frame duration ────────────────────────────────
+    A well-formed AAC-LC stream has exactly 1024 samples per frame.
+    High coefficient of variation (std_dev / mean > 0.15) signals broken
+    muxer timing.
+
+    Fix: audio fix path, pts_mul computed from actual durations.
+
+    ── CASE 5: Video / audio duration mismatch (video PTS wrong) ────────────
+    Occurs when yt-dlp merges streams whose PTS were never aligned — most
+    commonly a DASH video track stamped with doubled timestamps (e.g. the
+    source was 30 fps but the container claims 60 fps with the original 30-fps
+    PTS values, making every frame appear twice as long).  Symptom: video plays
+    at half speed while audio is perfectly normal.
+
+    Signature: video_dur / audio_dur > 1.4   (video is at least 40% longer
+               than audio — way outside any normal encoder-delay margin).
+
+    Fix: video fix path — re-encode video with setpts=(audio_dur/video_dur)*PTS
+    so timestamps are squished to match audio exactly.  Audio is stream-copied
+    untouched.  pts_mul = audio_dur / video_dur (e.g. 0.5 for 2× slow video).
+    """
+    try:
+        # ── Full stream + packet metadata ────────────────────────────────────
+        stream_out = subprocess.check_output([
+            "ffprobe", "-v", "quiet", "-print_format", "json",
+            "-show_streams", "-show_format", filepath,
+        ], timeout=30)
+        stream_data = json.loads(stream_out)
+        streams = stream_data.get("streams", [])
+
+        audio_stream = next((s for s in streams if s.get("codec_type") == "audio"), None)
+        video_stream = next((s for s in streams if s.get("codec_type") == "video"), None)
+
+        if not audio_stream:
+            return False, 1.0, "audio"
+
+        # ── Stream duration helper ────────────────────────────────────────────
+        def _stream_duration_s(s: dict) -> float:
+            d = s.get("duration")
+            if d and d != "N/A":
+                return float(d)
+            ts = s.get("duration_ts")
+            tb = s.get("time_base", "1/1")
+            if ts and tb:
+                num, den = (int(x) for x in tb.split("/"))
+                return int(ts) * num / den
+            return 0.0
+
+        audio_dur_s = _stream_duration_s(audio_stream)
+        video_dur_s = _stream_duration_s(video_stream) if video_stream else 0.0
+
+        # ── CASE 5: Video/audio duration mismatch ────────────────────────────
+        if audio_dur_s > 1.0 and video_dur_s > 1.0:
+            ratio = video_dur_s / audio_dur_s
+            if ratio > 1.4:
+                pts_mul = audio_dur_s / video_dur_s
+                return True, pts_mul, "video"
+
+        # ── Raw audio packet durations ────────────────────────────────────────
+        pkt_out = subprocess.check_output([
+            "ffprobe", "-v", "quiet", "-print_format", "json",
+            "-show_packets", "-select_streams", "a:0", filepath,
+        ], timeout=60)
+        pkt_data  = json.loads(pkt_out)
+        packets   = pkt_data.get("packets", [])
+        durations = [int(p["duration"]) for p in packets if p.get("duration") not in (None, "N/A")]
+
+        if not durations:
+            return False, 1.0, "audio"
+
+        profile         = audio_stream.get("profile", "").lower()
+        sample_rate     = int(audio_stream.get("sample_rate", 44100))
+        audio_start_pts = int(audio_stream.get("start_pts", 0))
+
+        total_ts_measured  = sum(durations)
+        nb_frames_measured = len(durations)
+        samples_per_frame  = total_ts_measured / nb_frames_measured
+
+        # ── CASE 1: Explicit HE-AAC ───────────────────────────────────────────
+        if "he" in profile:
+            if samples_per_frame > 3000:
+                return True, 0.5, "audio"
+
+        # ── CASE 2: Implicit SBR / LC-labelled HE-AAC ────────────────────────
+        if 1200 < samples_per_frame <= 2200:
+            if audio_dur_s > 1.0 and video_dur_s > 1.0:
+                ratio = audio_dur_s / video_dur_s
+                if ratio > 1.4 or ratio < 0.71:
+                    pts_mul = ratio
+                    return True, pts_mul, "audio"
+            else:
+                return True, 0.5, "audio"
+
+        # ── CASE 2b: Inflated duration_ts on genuine AAC-LC ──────────────────
+        if "he" not in profile and video_dur_s > 1.0 and nb_frames_measured >= 10:
+            real_audio_dur_s = nb_frames_measured * 1024 / sample_rate
+            real_ratio = real_audio_dur_s / video_dur_s
+            if real_ratio < 0.71:
+                pts_mul = real_ratio
+                return True, pts_mul, "audio"
+
+        # ── CASE 3: Edit-list / encoder-delay mismatch ───────────────────────
+        encoder_delay_threshold_pts = sample_rate * 0.010
+        if audio_start_pts < -encoder_delay_threshold_pts:
+            trace_out = subprocess.run(
+                ["ffprobe", "-v", "trace", filepath],
+                capture_output=True, text=True, timeout=15,
+            )
+            trace = trace_out.stderr + trace_out.stdout
+            has_edit_list = "type:'elst'" in trace
+            if has_edit_list:
+                import re as _re
+                match = _re.search(r"media time:\s*([\d.]+)", trace)
+                if match:
+                    video_tb_den = int(video_stream.get("time_base", "1/15360").split("/")[1]) if video_stream else 15360
+                    video_edit_offset_s = float(match.group(1)) / video_tb_den
+                    audio_preroll_s = abs(audio_start_pts) / sample_rate
+                    drift_s = abs(audio_preroll_s - video_edit_offset_s)
+                    if drift_s > 0.010:
+                        return True, 1.0, "audio"
+                else:
+                    return True, 1.0, "audio"
+
+        # ── CASE 4: Variable audio frame duration ────────────────────────────
+        if len(durations) >= 10:
+            mean_dur  = statistics.mean(durations)
+            stdev_dur = statistics.stdev(durations)
+            cv        = stdev_dur / mean_dur if mean_dur else 0.0
+            if cv > 0.15:
+                pts_mul = (audio_dur_s / video_dur_s) if (audio_dur_s > 0 and video_dur_s > 0) else 1.0
+                return True, pts_mul, "audio"
+
+        return False, 1.0, "audio"
+
+    except Exception:
+        return False, 1.0, "audio"
+
+
+def _remux_fix(src: str, dest: str, pts_mul: float = 1.0) -> bool:
+    wav = src + "_audio_raw.wav"
+    try:
+        r1 = subprocess.run([
+            "ffmpeg", "-y",
+            "-i", src,
+            "-vn", "-c:a", "pcm_s16le",
+            "-ar", "22050",
+            "-ac", "2",
+            wav,
+        ], capture_output=True, timeout=120)
+        if r1.returncode != 0 or not os.path.exists(wav):
+            return False
+
+        r2 = subprocess.run([
+            "ffmpeg", "-y",
+            "-i", src,
+            "-i", wav,
+            "-map", "0:v", "-map", "1:a",
+            "-vf", f"setpts={pts_mul:.10g}*PTS",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p",
+            "-video_track_timescale", "90000",
+            "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+            "-movflags", "+faststart",
+            dest,
+        ], capture_output=True, timeout=300)
+        return r2.returncode == 0 and os.path.exists(dest)
+    except Exception:
+        return False
+    finally:
+        try:
+            os.remove(wav)
+        except Exception:
+            pass
+
+
+def _fix_video_pts(src: str, dest: str, pts_mul: float) -> bool:
+    """
+    Fix broken video PTS by re-encoding the video stream with a setpts multiplier
+    while stream-copying the audio exactly as-is.
+
+    Use this when the video is the broken side (e.g. video plays 2× too slow
+    because PTS were stamped at double the correct rate).  Unlike _remux_fix,
+    this never touches the audio — it is already correct and should not be
+    resampled or re-encoded.
+
+    pts_mul examples:
+      0.5  → video was 2× too slow; squish PTS in half → plays at correct speed
+      0.75 → video was 1.33× too slow; etc.
+    """
+    try:
+        result = subprocess.run([
+            "ffmpeg", "-y",
+            "-i", src,
+            "-map", "0:v", "-map", "0:a",
+            "-vf", f"setpts={pts_mul:.10g}*PTS",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p",
+            "-video_track_timescale", "90000",
+            "-c:a", "copy",
+            "-movflags", "+faststart",
+            dest,
+        ], capture_output=True, timeout=300)
+        return result.returncode == 0 and os.path.exists(dest)
+    except Exception:
+        return False
+
+
+def _compress_to_target(src: str, dest: str, target_mb: float, duration_s: float, src_height: int) -> bool:
+    headroom    = 0.90
+    target_bits = target_mb * 1024 * 1024 * 8 * headroom
+    audio_bps   = 96_000
+    video_bps   = max(100_000, int(target_bits / duration_s) - audio_bps)
+
+    if src_height > 480 and video_bps < 500_000:
+        scale = "scale=-2:480"
+    elif src_height > 720 and video_bps < 1_000_000:
+        scale = "scale=-2:720"
+    else:
+        scale = "scale=trunc(iw/2)*2:trunc(ih/2)*2"
+
+    cmd = [
+        "ffmpeg", "-y", "-i", src,
+        "-vf", scale,
+        "-c:v", "libx264", "-preset", "ultrafast", "-b:v", str(video_bps),
+        "-c:a", "aac", "-b:a", "96k",
+        "-movflags", "+faststart",
+        "-f", "mp4", dest,
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=300)
+        return result.returncode == 0 and os.path.exists(dest)
+    except Exception:
+        return False
