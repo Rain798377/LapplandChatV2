@@ -192,9 +192,11 @@ def _compress_to_target(src: str, dest: str, target_mb: float, duration_s: float
         return False
 
 
-def copy_to_file_server(src: str) -> str | None:
+def copy_to_file_server(src: str, preferred_name: str = "") -> str | None:
     """
-    Copy `src` to the file server's watched folder, renamed to a random token.
+    Copy `src` to the file server's watched folder.
+    If `preferred_name` is provided, uses it as the filename (sanitized);
+    otherwise falls back to a random 256-bit hex token.
     Remuxes with faststart so browsers can stream it.
     Returns a direct download URL, or None on failure.
     Schedules auto-deletion after FILE_EXPIRY_SECONDS.
@@ -203,8 +205,14 @@ def copy_to_file_server(src: str) -> str | None:
     try:
         os.makedirs(FILE_SERVER_PATH, exist_ok=True)
         ext = os.path.splitext(src)[1]  # preserve .mp4 etc.
-        token = secrets.token_hex(32)   # 64-char random hex (256-bit)
-        hashed_name = token + ext
+
+        if preferred_name:
+            # Sanitize: strip path separators and other dangerous chars
+            safe = re.sub(r'[\\/:*?"<>|]', "_", preferred_name).strip(" .")
+            hashed_name = f"{safe}{ext}" if safe else secrets.token_hex(32) + ext
+        else:
+            hashed_name = secrets.token_hex(32) + ext  # 64-char random hex (256-bit)
+
         dest = os.path.join(FILE_SERVER_PATH, hashed_name)
         # Remux with faststart so browsers can stream without downloading the whole file
         result = subprocess.run([
@@ -236,6 +244,7 @@ async def attempt_download(
     url: str,
     height: int,
     status_msg=None,
+    clean_filename: str = "",
 ) -> tuple[str | None, str | None]:
     """
     Download the best available stream up to `height`p.
@@ -247,6 +256,7 @@ async def attempt_download(
       - Both None   → download failed
 
     `status_msg` is an optional discord.Message to edit with progress updates.
+    `clean_filename` is an optional name to use on the file server instead of a hash.
     """
     async def _status(text: str):
         if status_msg:
@@ -300,7 +310,7 @@ async def attempt_download(
 
     # tmpdir gone — work with raw_dest from here
     # Copy to file server first so we have the original safe
-    file_server_url = copy_to_file_server(raw_dest)
+    file_server_url = copy_to_file_server(raw_dest, preferred_name=clean_filename)
 
     # Now compress from raw_dest for Discord
     if duration > 0:
@@ -516,7 +526,7 @@ def setup(tree: app_commands.CommandTree):
         status_msg = await interaction.followup.send("Starting download…", wait=True)
         try:
             target_height = 1080 if quality == "auto" else int(quality)
-            filepath, fs_url = await attempt_download(url, target_height, status_msg)
+            filepath, fs_url = await attempt_download(url, target_height, status_msg, clean_filename)
 
             if not filepath and not fs_url:
                 await status_msg.edit(
