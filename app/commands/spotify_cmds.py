@@ -8,7 +8,6 @@ from discord import app_commands
 from spotify.spotify_player import (_cancel_autoplay, play_next, play_local_file, voice_states, FFMPEG_OPTIONS)
 from spotify.audio import search_and_download_audio
 from spotify.embed import build_now_playing_embed
-from spotify.spotify_api import resolve_spotify_to_query
 from spotify.resolver import _is_playlist_url, _is_spotify_url, _is_apple_music_url, _is_youtube_url, _is_soundcloud_url, resolve_apple_music_to_query, resolve_playlist_tracks
 
 
@@ -124,11 +123,8 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
 
         # ── Single track ──────────────────────────────────────────────────────
         if _is_spotify_url(query):
-            search_query, label = await resolve_spotify_to_query(query)
-            if not search_query:
-                await status.edit(content="Couldn't resolve that Spotify link.")
-                return
-            await status.edit(content=f"Found **{label}** on Spotify, downloading...")
+            search_query, label = query, query
+            await status.edit(content="Downloading from Spotify...")
 
         elif _is_apple_music_url(query):
             search_query, label = await resolve_apple_music_to_query(query)

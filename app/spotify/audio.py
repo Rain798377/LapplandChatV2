@@ -1,9 +1,12 @@
 import os
 import re
+import sys
 import glob
+import json
 import shutil
 import asyncio
 import tempfile
+import subprocess
 import functools
 import yt_dlp
 from .utils import _first_entry, _build_search_attempts
@@ -273,19 +276,149 @@ def _make_ydl_opts(outtmpl: str) -> dict:
     }
 
 
+def _run_spotdl(url: str, outdir: str) -> tuple[list[str], str]:
+    clean_url = url.split("?")[0] if "spotify.com" in url else url
+
+    _spotdl_cfg = os.path.join(os.path.expanduser("~"), ".spotdl", "config.json")
+    try:
+        with open(_spotdl_cfg) as _f:
+            _cfg = json.load(_f)
+        if _cfg.get("load_config", False):
+            _cfg["load_config"] = False
+            with open(_spotdl_cfg, "w") as _f:
+                json.dump(_cfg, _f, indent=4)
+    except Exception:
+        pass
+
+    cmd = [
+        sys.executable, "-m", "spotdl",
+        "--format", "mp3",
+        "--bitrate", "320k",
+        "--simple-tui",
+        "download",
+        clean_url,
+    ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True, cwd=outdir)
+    files = sorted(glob.glob(os.path.join(outdir, "**", "*.mp3"), recursive=True))
+
+    combined = "\n".join(filter(None, [result.stdout.strip(), result.stderr.strip()]))
+    combined += f"\n[exit code: {result.returncode}]"
+
+    return files, combined
+
+
 async def search_and_download_audio(
     query: str,
     expected_title: str = "",
     expected_artist: str = "",
 ) -> tuple[str, dict] | tuple[None, None]:
     """
-    Try to download audio for `query`, falling back to progressively simpler
-    searches if the exact query returns no results.
+    Download audio for `query`.
+    - Spotify URLs  → spotdl
+    - Everything else → yt-dlp search with progressive fallbacks
 
     `expected_title` and `expected_artist` (e.g. from Spotify metadata) are
     forwarded to _pick_best_url where they boost results whose yt-dlp metadata
     closely matches, helping avoid wrong versions/covers/live recordings.
     """
+
+    # ── Spotify URL → spotdl (or yt-dlp for non-ASCII titles) ───────────────
+    if "spotify.com" in query:
+        loop = asyncio.get_event_loop()
+
+        # Peek at Spotify metadata to detect non-ASCII titles before running spotdl.
+        # spotdl fails on CJK / Arabic / etc. so we fall through to yt-dlp instead.
+        _use_spotdl = True
+        _sp_meta = None
+        try:
+            from .spotify_api import fetch_spotify_track_meta
+            _sp_meta = await fetch_spotify_track_meta(query)
+            if _sp_meta:
+                _combined = f"{_sp_meta.get('title', '')} {_sp_meta.get('artist', '')}"
+                if re.search(r"[^\x00-\x7F]", _combined):
+                    _use_spotdl = False
+                    print(f"[search_and_download_audio] non-ASCII in '{_combined}' — skipping spotdl, using yt-dlp")
+        except Exception as e:
+            print(f"[search_and_download_audio] metadata peek failed: {e}")
+
+        if not _use_spotdl and _sp_meta:
+            _title  = _sp_meta.get("title", "")
+            _artist = _sp_meta.get("artist", "")
+            _label  = f"{_artist} - {_title}".strip(" -")
+            return await search_and_download_audio(
+                f"ytsearch1:{_label}",
+                expected_title=_title,
+                expected_artist=_artist,
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            try:
+                files, output = await loop.run_in_executor(
+                    None, lambda: _run_spotdl(query, tmpdir)
+                )
+            except Exception as e:
+                print(f"[search_and_download_audio] spotdl exception: {e} — falling back to yt-dlp")
+                files, output = [], str(e)
+
+            if not files:
+                print(f"[search_and_download_audio] spotdl returned no files — falling back to yt-dlp:\n{output}")
+                _title  = (_sp_meta or {}).get("title", "")
+                _artist = (_sp_meta or {}).get("artist", "")
+                _label  = f"{_artist} - {_title}".strip(" -") if (_title or _artist) else ""
+                if not _label:
+                    return None, None
+                return await search_and_download_audio(
+                    f"ytsearch1:{_label}",
+                    expected_title=_title,
+                    expected_artist=_artist,
+                )
+
+            filepath = files[0]
+            display_name = os.path.basename(filepath)
+
+            meta: dict = {
+                "title": None, "artist": None, "album": None,
+                "duration": None, "thumbnail": None,
+                "spotify_url": query,
+            }
+            try:
+                from mutagen.id3 import ID3
+                from mutagen.mp3 import MP3
+                tags = ID3(filepath)
+                mp3  = MP3(filepath)
+                meta["title"]    = str(tags.get("TIT2", "")) or None
+                meta["artist"]   = str(tags.get("TPE1", "")) or None
+                meta["album"]    = str(tags.get("TALB", "")) or None
+                meta["duration"] = int(mp3.info.length)
+                apic = tags.get("APIC:") or tags.get("APIC")
+                if apic:
+                    meta["thumbnail"] = apic.data
+            except Exception as e:
+                print(f"[search_and_download_audio] mutagen failed: {e}")
+
+            # Filename fallback: "Artist - Title.mp3"
+            if not meta["title"]:
+                stem = os.path.splitext(display_name)[0]
+                if " - " in stem:
+                    artist_part, title_part = stem.split(" - ", 1)
+                    meta["artist"] = meta["artist"] or artist_part.strip()
+                    meta["title"]  = title_part.strip()
+                else:
+                    meta["title"] = stem
+
+            safe_name = re.sub(r'[<>:"/\\|?*]', '_', display_name).strip() or "audio.mp3"
+            dest = os.path.join(tempfile.gettempdir(), safe_name)
+            shutil.copy2(filepath, dest)
+
+        if not os.path.exists(dest) or os.path.getsize(dest) == 0:
+            print(f"[search_and_download_audio] spotdl dest missing or empty: {dest}")
+            return None, None
+
+        print(f"[search_and_download_audio] spotdl saved: {dest} ({os.path.getsize(dest)/1024:.1f}KB)")
+        return dest, meta
+
+    # ── Everything else → yt-dlp search ─────────────────────────────────────
 
     def _run(ydl_opts, q):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:

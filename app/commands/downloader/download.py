@@ -153,44 +153,28 @@ def _strip_spotify_url(url: str) -> str:
 
 
 def _run_spotdl(url: str, outdir: str) -> tuple[list[str], str]:
-    """
-    Run spotdl synchronously. Always uses SpotipyFree (spotdl v4.5.0 default).
-    No Spotify credentials needed or used with this backend.
+    clean_url = _strip_spotify_url(url)
 
-    To switch to the official API (requires Spotify Premium + your own approved app):
-      - Set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in config.py
-      - Uncomment the --use-official-api block below
-    """
-    clean_url = _strip_spotify_url(url)  # CHANGED — ?si= params break arg parsing
-    # Disable load_config in the global spotdl config so 4.5.0 doesn't  # CHANGED
-    # re-load the 4.4.4 config and corrupt CLI arg parsing.              # CHANGED
-    import json as _json                                                  # CHANGED
-    _spotdl_cfg = os.path.join(os.path.expanduser("~"), ".spotdl", "config.json")  # CHANGED
-    try:                                                                   # CHANGED
-        with open(_spotdl_cfg) as _f:                                     # CHANGED
-            _cfg = _json.load(_f)                                         # CHANGED
-        if _cfg.get("load_config", False):                                # CHANGED
-            _cfg["load_config"] = False                                   # CHANGED
-            with open(_spotdl_cfg, "w") as _f:                           # CHANGED
-                _json.dump(_cfg, _f, indent=4)                            # CHANGED
-    except Exception:                                                      # CHANGED
-        pass                                                               # CHANGED
+    import json as _json
+    _spotdl_cfg = os.path.join(os.path.expanduser("~"), ".spotdl", "config.json")
+    try:
+        with open(_spotdl_cfg) as _f:
+            _cfg = _json.load(_f)
+        if _cfg.get("load_config", False):
+            _cfg["load_config"] = False
+            with open(_spotdl_cfg, "w") as _f:
+                _json.dump(_cfg, _f, indent=4)
+    except Exception:
+        pass
 
     cmd = [
         sys.executable, "-m", "spotdl",
-        "--format", "mp3",      # CHANGED — flags must come BEFORE the subcommand
-        "--bitrate", "320k",    # anything after 'download' is treated as a query arg
+        "--format", "mp3",
+        "--bitrate", "320k",
         "--simple-tui",
         "download",
         clean_url,
     ]
-
-    # Uncomment to use the official Spotify API (Premium + approved app required):
-    # cmd += [
-    #     "--use-official-api",
-    #     "--client-id", SPOTIFY_CLIENT_ID,
-    #     "--client-secret", SPOTIFY_CLIENT_SECRET,
-    # ]
 
     result = subprocess.run(
         cmd,
@@ -198,9 +182,14 @@ def _run_spotdl(url: str, outdir: str) -> tuple[list[str], str]:
         text=True,
         cwd=outdir,
     )
-    files = sorted(glob.glob(os.path.join(outdir, "**", "*.mp3"), recursive=True))
-    return files, result.stderr
 
+    files = sorted(glob.glob(os.path.join(outdir, "**", "*.mp3"), recursive=True))
+
+    # Combine stdout + stderr so the caller sees everything
+    combined_output = "\n".join(filter(None, [result.stdout.strip(), result.stderr.strip()]))
+    combined_output += f"\n[exit code: {result.returncode}]"
+
+    return files, combined_output
 
 async def download_spotify_track(
     interaction: discord.Interaction,
