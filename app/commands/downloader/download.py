@@ -87,6 +87,14 @@ def _first_entry(info: dict | None) -> dict:
     return info
 
 
+def _pack_zip(files: list[str], zip_path: str) -> None:
+    """Pack a list of files into a zip archive."""
+    import zipfile as _zipfile
+    with _zipfile.ZipFile(zip_path, "w", _zipfile.ZIP_DEFLATED) as zf:
+        for fp in files:
+            zf.write(fp, os.path.basename(fp))
+
+
 def _is_spotify_playlist_url(url: str) -> bool:
     """Returns True if the URL points to a playlist, album, or artist (multi-track)."""
     return bool(re.search(r"spotify\.com/(playlist|album|artist)/", url))
@@ -198,22 +206,21 @@ async def download_spotify_track(
     interaction: discord.Interaction,
     url: str,
     normalize: bool = False,
-):  # CHANGED — uses spotdl v4.5.0 SpotipyFree default; surfaces stderr on failure
+):
     status = await interaction.followup.send("Fetching track via spotdl…", wait=True)
 
     loop = asyncio.get_event_loop()
     with tempfile.TemporaryDirectory() as tmpdir:
         try:
-            files, stderr = await loop.run_in_executor(None, lambda: _run_spotdl(url, tmpdir))  # CHANGED
+            files, stderr = await loop.run_in_executor(None, lambda: _run_spotdl(url, tmpdir))
         except Exception as e:
             await status.edit(content=f"spotdl failed: `{e}`")
             return
 
         if not files:
-            # Surface the actual error instead of a generic message  # CHANGED
-            err_snippet = stderr.strip().splitlines()[-3:] if stderr.strip() else []  # CHANGED
-            err_text = "\n".join(err_snippet) if err_snippet else "no output"         # CHANGED
-            await status.edit(content=f"spotdl returned no files.\n```\n{err_text}\n```")  # CHANGED
+            err_snippet = stderr.strip().splitlines()[-3:] if stderr.strip() else []
+            err_text = "\n".join(err_snippet) if err_snippet else "no output"
+            await status.edit(content=f"spotdl returned no files.\n```\n{err_text}\n```")
             return
 
         filepath = files[0]
@@ -228,12 +235,22 @@ async def download_spotify_track(
                 filepath = normed
 
         size_mb = os.path.getsize(filepath) / (1024 * 1024)
-        if size_mb > MAX_FILE_SIZE_MB:
-            await status.edit(content=f"Track is {size_mb:.1f} MB — too large to upload.")
-            return
-
         dest = os.path.join(tempfile.gettempdir(), display_name)
         shutil.copy2(filepath, dest)
+
+    # ── Over limit → file server  # CHANGED
+    if size_mb > MAX_FILE_SIZE_MB:
+        await status.edit(content=f"Track is {size_mb:.1f} MB — sending to file server…")
+        fs_url = copy_to_file_server(dest, preferred_name=os.path.splitext(display_name)[0])
+        try:
+            os.remove(dest)
+        except Exception:
+            pass
+        if fs_url:
+            await status.edit(content=f"**{display_name}**\n-# Too large for Discord. Download here: <{fs_url}>")
+        else:
+            await status.edit(content="Track too large for Discord and file server copy failed.")
+        return
 
     await status.edit(content=f"Downloaded: **{display_name}**")
     await interaction.followup.send(file=discord.File(dest, display_name))
@@ -248,7 +265,9 @@ async def download_spotify_playlist(
     interaction: discord.Interaction,
     url: str,
     normalize: bool = False,
-):  # CHANGED — new handler for playlists, albums, and artist discographies
+):
+    import zipfile as _zipfile
+
     status = await interaction.followup.send(
         f"Fetching playlist via spotdl (max {SPOTIFY_PLAYLIST_MAX_SONGS} songs)…",
         wait=True,
@@ -257,61 +276,61 @@ async def download_spotify_playlist(
     loop = asyncio.get_event_loop()
     with tempfile.TemporaryDirectory() as tmpdir:
         try:
-            all_files, stderr = await loop.run_in_executor(None, lambda: _run_spotdl(url, tmpdir))  # CHANGED
+            all_files, stderr = await loop.run_in_executor(None, lambda: _run_spotdl(url, tmpdir))
         except Exception as e:
             await status.edit(content=f"spotdl failed: `{e}`")
             return
 
         if not all_files:
-            err_snippet = stderr.strip().splitlines()[-3:] if stderr.strip() else []  # CHANGED
-            err_text = "\n".join(err_snippet) if err_snippet else "no output"         # CHANGED
-            await status.edit(content=f"spotdl returned no files.\n```\n{err_text}\n```")  # CHANGED
+            err_snippet = stderr.strip().splitlines()[-3:] if stderr.strip() else []
+            err_text = "\n".join(err_snippet) if err_snippet else "no output"
+            await status.edit(content=f"spotdl returned no files.\n```\n{err_text}\n```")
             return
 
-        # Enforce cap
         files = all_files[:SPOTIFY_PLAYLIST_MAX_SONGS]
         capped = len(all_files) > SPOTIFY_PLAYLIST_MAX_SONGS
 
-        uploaded, skipped = 0, 0
-        await status.edit(content=f"Uploading {len(files)} track(s)…")
+        # ── Normalization ─────────────────────────────────────────────────────
+        if normalize:
+            await status.edit(content=f"Normalizing {len(files)} track(s)…")
+            normed = []
+            for fp in files:
+                n = os.path.join(tmpdir, "normed_" + os.path.basename(fp))
+                ok = await loop.run_in_executor(None, lambda p=fp, nv=n: _normalize_audio(p, nv))
+                normed.append(n if ok else fp)
+            files = normed
 
-        for filepath in files:
-            display_name = os.path.basename(filepath)
+        # ── Pack zip while files are still in tmpdir ──────────────────────────
+        await status.edit(content=f"Packing {len(files)} track(s) into zip…")
+        zip_name = f"playlist_{secrets.token_hex(6)}.zip"
+        zip_path = os.path.join(tmpdir, zip_name)
+        await loop.run_in_executor(None, lambda: _pack_zip(files, zip_path))
 
-            # ── Audio normalization per track ─────────────────────────────────
-            if normalize:
-                normed = os.path.join(tmpdir, "normed_" + display_name)
-                ok = await loop.run_in_executor(None, lambda p=filepath, n=normed: _normalize_audio(p, n))
-                if ok:
-                    filepath = normed
+        zip_mb = os.path.getsize(zip_path) / (1024 * 1024)
+        zip_dest = os.path.join(tempfile.gettempdir(), zip_name)
+        shutil.copy2(zip_path, zip_dest)
 
-            size_mb = os.path.getsize(filepath) / (1024 * 1024)
-            if size_mb > MAX_FILE_SIZE_MB:
-                skipped += 1
-                continue
-
-            dest = os.path.join(tempfile.gettempdir(), display_name)
-            shutil.copy2(filepath, dest)
-            try:
-                await interaction.followup.send(file=discord.File(dest, display_name))
-                uploaded += 1
-            except Exception:
-                skipped += 1
-            finally:
-                try:
-                    os.remove(dest)
-                except Exception:
-                    pass
-
-    summary_parts = [f"Done — uploaded **{uploaded}** track(s)."]
-    if skipped:
-        summary_parts.append(f"{skipped} skipped (too large).")
+    # tmpdir + all mp3s deleted here; zip_dest still alive
+    summary = f"**{len(files)} track(s)** packed."
     if capped:
-        summary_parts.append(
-            f"Playlist was capped at {SPOTIFY_PLAYLIST_MAX_SONGS} songs "
-            f"({len(all_files)} total). Adjust `SPOTIFY_PLAYLIST_MAX_SONGS` in config to change this."
-        )
-    await status.edit(content=" ".join(summary_parts))
+        summary += f" (capped at {SPOTIFY_PLAYLIST_MAX_SONGS}/{len(all_files)} — adjust `SPOTIFY_PLAYLIST_MAX_SONGS` in config)"
+
+    try:
+        if zip_mb <= MAX_FILE_SIZE_MB:
+            await status.edit(content=summary)
+            await interaction.followup.send(file=discord.File(zip_dest, zip_name))
+        else:
+            await status.edit(content=f"{summary} Zip is {zip_mb:.1f} MB — sending to file server…")
+            fs_url = copy_to_file_server(zip_dest, preferred_name=os.path.splitext(zip_name)[0])
+            if fs_url:
+                await status.edit(content=f"{summary}\n-# Too large for Discord. Download here: <{fs_url}>")
+            else:
+                await status.edit(content="Zip too large for Discord and file server copy failed.")
+    finally:
+        try:
+            os.remove(zip_dest)
+        except Exception:
+            pass
 
 
 # ── attempt_download (video) ──────────────────────────────────────────────────
