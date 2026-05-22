@@ -28,6 +28,7 @@ REPLY_CHANCE          = random.uniform(0.8, 0.9)
 # Music config
 AUTOPLAY_DELAY        = 5
 DEFAULT_VOLUME        = 0.15 # Default volume level is 15% (0.0 to 2.0)
+SPOTIFY_PLAYLIST_MAX_SONGS    = 25
 
 # Memory config
 MEMORY_FILE           = "data/memory.json"
