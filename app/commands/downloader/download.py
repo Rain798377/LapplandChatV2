@@ -1,17 +1,27 @@
 import os
 import re
+import sys
 import glob
 import shutil
 import asyncio
 import secrets
 import tempfile
+import subprocess
 import aiohttp
 import yt_dlp
 import discord
 from discord import app_commands
-from config import MAX_FILE_SIZE_MB, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, FILE_SERVER_PATH, FILE_SERVER_BASE_URL, FILE_EXPIRY_SECONDS, NORMALIZE_AUDIO  # CHANGED
-from .video_fix import _probe, _needs_remux, _remux_fix, _fix_video_pts, _compress_to_target, _normalize_audio  # CHANGED
-
+from config import (
+    MAX_FILE_SIZE_MB,
+    # SPOTIFY_CLIENT_ID,    # unused with SpotipyFree default; uncomment if switching to official API
+    # SPOTIFY_CLIENT_SECRET,
+    FILE_SERVER_PATH,
+    FILE_SERVER_BASE_URL,
+    FILE_EXPIRY_SECONDS,
+    NORMALIZE_AUDIO,
+    SPOTIFY_PLAYLIST_MAX_SONGS,
+)
+from .video_fix import _probe, _needs_remux, _remux_fix, _fix_video_pts, _compress_to_target, _normalize_audio
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -77,6 +87,11 @@ def _first_entry(info: dict | None) -> dict:
     return info
 
 
+def _is_spotify_playlist_url(url: str) -> bool:
+    """Returns True if the URL points to a playlist, album, or artist (multi-track)."""
+    return bool(re.search(r"spotify\.com/(playlist|album|artist)/", url))
+
+
 # ── Download command helpers ───────────────────────────────────────────────────
 
 def copy_to_file_server(src: str, preferred_name: str = "") -> str | None:
@@ -88,7 +103,6 @@ def copy_to_file_server(src: str, preferred_name: str = "") -> str | None:
     Returns a direct download URL, or None on failure.
     Schedules auto-deletion after FILE_EXPIRY_SECONDS.
     """
-    import subprocess
     try:
         os.makedirs(FILE_SERVER_PATH, exist_ok=True)
         ext = os.path.splitext(src)[1]
@@ -123,12 +137,191 @@ async def _delete_after(filepath: str, delay: float):
         pass
 
 
+# ── spotdl helpers ────────────────────────────────────────────────────────────
+
+def _strip_spotify_url(url: str) -> str:
+    """Strip ?si= tracking params that confuse spotdl's arg parser."""  # CHANGED
+    return url.split("?")[0] if "spotify.com" in url else url          # CHANGED
+
+
+def _run_spotdl(url: str, outdir: str) -> tuple[list[str], str]:
+    """
+    Run spotdl synchronously. Always uses SpotipyFree (spotdl v4.5.0 default).
+    No Spotify credentials needed or used with this backend.
+
+    To switch to the official API (requires Spotify Premium + your own approved app):
+      - Set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in config.py
+      - Uncomment the --use-official-api block below
+    """
+    clean_url = _strip_spotify_url(url)  # CHANGED — ?si= params break arg parsing
+    # Disable load_config in the global spotdl config so 4.5.0 doesn't  # CHANGED
+    # re-load the 4.4.4 config and corrupt CLI arg parsing.              # CHANGED
+    import json as _json                                                  # CHANGED
+    _spotdl_cfg = os.path.join(os.path.expanduser("~"), ".spotdl", "config.json")  # CHANGED
+    try:                                                                   # CHANGED
+        with open(_spotdl_cfg) as _f:                                     # CHANGED
+            _cfg = _json.load(_f)                                         # CHANGED
+        if _cfg.get("load_config", False):                                # CHANGED
+            _cfg["load_config"] = False                                   # CHANGED
+            with open(_spotdl_cfg, "w") as _f:                           # CHANGED
+                _json.dump(_cfg, _f, indent=4)                            # CHANGED
+    except Exception:                                                      # CHANGED
+        pass                                                               # CHANGED
+
+    cmd = [
+        sys.executable, "-m", "spotdl",
+        "--format", "mp3",      # CHANGED — flags must come BEFORE the subcommand
+        "--bitrate", "320k",    # anything after 'download' is treated as a query arg
+        "--simple-tui",
+        "download",
+        clean_url,
+    ]
+
+    # Uncomment to use the official Spotify API (Premium + approved app required):
+    # cmd += [
+    #     "--use-official-api",
+    #     "--client-id", SPOTIFY_CLIENT_ID,
+    #     "--client-secret", SPOTIFY_CLIENT_SECRET,
+    # ]
+
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        cwd=outdir,
+    )
+    files = sorted(glob.glob(os.path.join(outdir, "**", "*.mp3"), recursive=True))
+    return files, result.stderr
+
+
+async def download_spotify_track(
+    interaction: discord.Interaction,
+    url: str,
+    normalize: bool = False,
+):  # CHANGED — uses spotdl v4.5.0 SpotipyFree default; surfaces stderr on failure
+    status = await interaction.followup.send("Fetching track via spotdl…", wait=True)
+
+    loop = asyncio.get_event_loop()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        try:
+            files, stderr = await loop.run_in_executor(None, lambda: _run_spotdl(url, tmpdir))  # CHANGED
+        except Exception as e:
+            await status.edit(content=f"spotdl failed: `{e}`")
+            return
+
+        if not files:
+            # Surface the actual error instead of a generic message  # CHANGED
+            err_snippet = stderr.strip().splitlines()[-3:] if stderr.strip() else []  # CHANGED
+            err_text = "\n".join(err_snippet) if err_snippet else "no output"         # CHANGED
+            await status.edit(content=f"spotdl returned no files.\n```\n{err_text}\n```")  # CHANGED
+            return
+
+        filepath = files[0]
+        display_name = os.path.basename(filepath)
+
+        # ── Audio normalization ───────────────────────────────────────────────
+        if normalize:
+            await status.edit(content="Normalizing audio…")
+            normed = os.path.join(tmpdir, "normed_" + display_name)
+            ok = await loop.run_in_executor(None, lambda: _normalize_audio(filepath, normed))
+            if ok:
+                filepath = normed
+
+        size_mb = os.path.getsize(filepath) / (1024 * 1024)
+        if size_mb > MAX_FILE_SIZE_MB:
+            await status.edit(content=f"Track is {size_mb:.1f} MB — too large to upload.")
+            return
+
+        dest = os.path.join(tempfile.gettempdir(), display_name)
+        shutil.copy2(filepath, dest)
+
+    await status.edit(content=f"Downloaded: **{display_name}**")
+    await interaction.followup.send(file=discord.File(dest, display_name))
+    asyncio.create_task(delayed_delete(status, delay=5))
+    try:
+        os.remove(dest)
+    except Exception:
+        pass
+
+
+async def download_spotify_playlist(
+    interaction: discord.Interaction,
+    url: str,
+    normalize: bool = False,
+):  # CHANGED — new handler for playlists, albums, and artist discographies
+    status = await interaction.followup.send(
+        f"Fetching playlist via spotdl (max {SPOTIFY_PLAYLIST_MAX_SONGS} songs)…",
+        wait=True,
+    )
+
+    loop = asyncio.get_event_loop()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        try:
+            all_files, stderr = await loop.run_in_executor(None, lambda: _run_spotdl(url, tmpdir))  # CHANGED
+        except Exception as e:
+            await status.edit(content=f"spotdl failed: `{e}`")
+            return
+
+        if not all_files:
+            err_snippet = stderr.strip().splitlines()[-3:] if stderr.strip() else []  # CHANGED
+            err_text = "\n".join(err_snippet) if err_snippet else "no output"         # CHANGED
+            await status.edit(content=f"spotdl returned no files.\n```\n{err_text}\n```")  # CHANGED
+            return
+
+        # Enforce cap
+        files = all_files[:SPOTIFY_PLAYLIST_MAX_SONGS]
+        capped = len(all_files) > SPOTIFY_PLAYLIST_MAX_SONGS
+
+        uploaded, skipped = 0, 0
+        await status.edit(content=f"Uploading {len(files)} track(s)…")
+
+        for filepath in files:
+            display_name = os.path.basename(filepath)
+
+            # ── Audio normalization per track ─────────────────────────────────
+            if normalize:
+                normed = os.path.join(tmpdir, "normed_" + display_name)
+                ok = await loop.run_in_executor(None, lambda p=filepath, n=normed: _normalize_audio(p, n))
+                if ok:
+                    filepath = normed
+
+            size_mb = os.path.getsize(filepath) / (1024 * 1024)
+            if size_mb > MAX_FILE_SIZE_MB:
+                skipped += 1
+                continue
+
+            dest = os.path.join(tempfile.gettempdir(), display_name)
+            shutil.copy2(filepath, dest)
+            try:
+                await interaction.followup.send(file=discord.File(dest, display_name))
+                uploaded += 1
+            except Exception:
+                skipped += 1
+            finally:
+                try:
+                    os.remove(dest)
+                except Exception:
+                    pass
+
+    summary_parts = [f"Done — uploaded **{uploaded}** track(s)."]
+    if skipped:
+        summary_parts.append(f"{skipped} skipped (too large).")
+    if capped:
+        summary_parts.append(
+            f"Playlist was capped at {SPOTIFY_PLAYLIST_MAX_SONGS} songs "
+            f"({len(all_files)} total). Adjust `SPOTIFY_PLAYLIST_MAX_SONGS` in config to change this."
+        )
+    await status.edit(content=" ".join(summary_parts))
+
+
+# ── attempt_download (video) ──────────────────────────────────────────────────
+
 async def attempt_download(
     url: str,
     height: int,
     status_msg=None,
     clean_filename: str = "",
-    normalize: bool = False,  # CHANGED
+    normalize: bool = False,
 ) -> tuple[str | None, str | None]:
     """
     Download the best available stream up to `height`p.
@@ -181,12 +374,12 @@ async def attempt_download(
                 src = fixed
 
         # ── Audio normalization ───────────────────────────────────────────────
-        if normalize:                                                              # CHANGED
-            await _status("Normalizing audio…")                                   # CHANGED
-            normed = os.path.join(tmpdir, "normed_" + base_name)                  # CHANGED
-            ok = await loop.run_in_executor(None, lambda: _normalize_audio(src, normed))  # CHANGED
-            if ok:                                                                 # CHANGED
-                src = normed                                                       # CHANGED
+        if normalize:
+            await _status("Normalizing audio…")
+            normed = os.path.join(tmpdir, "normed_" + base_name)
+            ok = await loop.run_in_executor(None, lambda: _normalize_audio(src, normed))
+            if ok:
+                src = normed
 
         size_mb = os.path.getsize(src) / (1024 * 1024)
 
@@ -235,130 +428,6 @@ async def attempt_download(
     return None, file_server_url
 
 
-async def download_spotify_track(interaction: discord.Interaction, url: str, normalize: bool = False):  # CHANGED
-    status = await interaction.followup.send("Detected Spotify link, fetching track info...", wait=True)
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f"https://api.song.link/v1-alpha.1/links?url={url}&userCountry=US") as resp:
-                data = await resp.json()
-            entities = list(data.get("entitiesByUniqueId", {}).values())
-            if not entities:
-                async with session.get(f"https://api.song.link/v1-alpha.1/links?url={url}") as resp:
-                    data = await resp.json()
-                entities = list(data.get("entitiesByUniqueId", {}).values())
-
-        if not entities:
-            await status.edit(content="song.link failed, trying Spotify page...")
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers={"User-Agent": "Mozilla/5.0"}) as resp:
-                    html = await resp.text()
-            og_title = re.search(r'<meta property="og:title" content="([^"]+)"', html)
-            og_desc  = re.search(r'<meta name="description" content="([^"]+)"', html)
-            if og_title:
-                raw = re.sub(r"(?i)listen to (.+) on spotify", r"\1", og_title.group(1)).strip()
-                track_name = raw.split(" - ")[0].strip()
-                artist = og_desc.group(1).split(" · ")[0].strip() if og_desc else ""
-            else:
-                await status.edit(content="Couldn't fetch track info from any source.")
-                return
-            yt_url = None
-        else:
-            entity     = entities[0]
-            track_name = entity.get("title")
-            artist     = entity.get("artistName", "")
-            links      = data.get("linksByPlatform", {})
-            yt_url     = links.get("youtubeMusic", {}).get("url") or links.get("youtube", {}).get("url")
-
-        if not track_name:
-            await status.edit(content="Couldn't extract track name.")
-            return
-
-    except Exception as e:
-        await status.edit(content=f"Couldn't fetch track info: `{e}`")
-        return
-
-    clean_artist = artist.split(",")[0].split("&")[0].strip()
-    clean_title  = re.sub(r"[\(\[].*?[\)\]]", "", track_name).strip()
-
-    search_attempts = []
-    if yt_url:
-        search_attempts.append((yt_url, f"**{artist} - {track_name}** (exact match)"))
-    search_attempts += [
-        (f"ytsearch1:{artist} {track_name}",        f"**{artist} - {track_name}**"),
-        (f"ytsearch1:{clean_artist} {clean_title}", f"**{clean_artist} - {clean_title}** (simplified)"),
-        (f"ytsearch1:{clean_title}",                f"**{clean_title}** (title only)"),
-    ]
-
-    def _run_ydl_with_url(ydl_opts, query):
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(query, download=True)
-            info = _first_entry(info)
-            return info.get("webpage_url") or info.get("url") if info else None
-
-    for search_query, label in search_attempts:
-        await status.edit(content=f"Searching YouTube for: {label}...")
-        with tempfile.TemporaryDirectory() as tmpdir:
-            try:
-                for quality in ["0", "128"]:
-                    ydl_opts = {
-                        "outtmpl": os.path.join(tmpdir, "%(title).50s.%(ext)s"),
-                        "quiet": True,
-                        "no_warnings": True,
-                        "noplaylist": True,
-                        "playlist_items": "1",
-                        "format": "bestaudio/best",
-                        "postprocessors": [{
-                            "key": "FFmpegExtractAudio",
-                            "preferredcodec": "mp3",
-                            "preferredquality": quality,
-                        }],
-                    }
-                    loop = asyncio.get_event_loop()
-                    resolved_url = await loop.run_in_executor(None, lambda: _run_ydl_with_url(ydl_opts, search_query))
-
-                    files = glob.glob(os.path.join(tmpdir, "*.mp3"))
-                    if not files:
-                        break
-
-                    filepath = files[0]
-
-                    # ── Audio normalization (Spotify path) ────────────────────
-                    if normalize:                                                  # CHANGED
-                        normed_path = os.path.join(tmpdir, "normed_" + os.path.basename(filepath))  # CHANGED
-                        ok = await asyncio.get_event_loop().run_in_executor(      # CHANGED
-                            None, lambda p=filepath, n=normed_path: _normalize_audio(p, n)  # CHANGED
-                        )                                                          # CHANGED
-                        if ok:                                                     # CHANGED
-                            filepath = normed_path                                 # CHANGED
-
-                    size_mb  = os.path.getsize(filepath) / (1024 * 1024)
-
-                    if size_mb <= MAX_FILE_SIZE_MB:
-                        dest   = os.path.join(tempfile.gettempdir(), os.path.basename(filepath))
-                        shutil.copy2(filepath, dest)
-                        source = resolved_url or search_query
-                        await status.edit(content=f"Found: **{clean_artist} - {clean_title}**")
-                        await interaction.followup.send(
-                            file=discord.File(dest, os.path.basename(f"{clean_artist} - {clean_title}.mp3")),
-                            content=f"-# Source: <{source}>"
-                        )
-                        asyncio.create_task(delayed_delete(status, delay=5))
-                        try: os.remove(dest)
-                        except Exception: pass
-                        return
-
-                    os.remove(filepath)
-                    await status.edit(content=f"Best quality too large ({size_mb:.1f}MB), trying lower quality...")
-                else:
-                    await status.edit(content="Track is too large to upload even at lower quality.")
-                    return
-            except Exception:
-                continue
-
-    await status.edit(content="Couldn't find the track on YouTube after multiple attempts.")
-
-
 # ── Command registration ───────────────────────────────────────────────────────
 
 def setup(tree: app_commands.CommandTree):
@@ -370,7 +439,7 @@ def setup(tree: app_commands.CommandTree):
         quality="Video quality (default: auto picks best quality under file size limit)",
         audio_only="Extract audio only (mp3)",
         filename="Custom filename (without extension)",
-        normalize="Normalize audio loudness to -14 LUFS (default: per config)",  # CHANGED
+        normalize="Normalize audio loudness to -14 LUFS (default: per config)",
     )
     @app_commands.choices(quality=[
         app_commands.Choice(name="1080p", value="1080"),
@@ -385,13 +454,17 @@ def setup(tree: app_commands.CommandTree):
         quality: str = "auto",
         audio_only: bool = False,
         filename: str = "",
-        normalize: bool = NORMALIZE_AUDIO,  # CHANGED
+        normalize: bool = NORMALIZE_AUDIO,
     ):
         await interaction.response.defer(thinking=True)
 
-        if "spotify.com" in url or "open.spotify.com" in url:
-            await download_spotify_track(interaction, url, normalize)  # CHANGED
-            return
+        # ── Spotify routing ────────────────────────────────────────────────────
+        if "spotify.com" in url or "open.spotify.com" in url:  # CHANGED
+            if _is_spotify_playlist_url(url):                   # CHANGED
+                await download_spotify_playlist(interaction, url, normalize)  # CHANGED
+            else:                                               # CHANGED
+                await download_spotify_track(interaction, url, normalize)     # CHANGED
+            return                                              # CHANGED
 
         clean_filename = re.sub(r'[\\/:*?"<>|]', "_", filename).strip(" .") if filename else ""
 
@@ -414,12 +487,11 @@ def setup(tree: app_commands.CommandTree):
 
                 filepath = files[0]
 
-                # ── Audio normalization (audio-only path) ─────────────────────
-                if normalize:                                                      # CHANGED
-                    normed = os.path.join(tmpdir, "normed_" + os.path.basename(filepath))  # CHANGED
-                    ok = await loop.run_in_executor(None, lambda: _normalize_audio(filepath, normed))  # CHANGED
-                    if ok:                                                         # CHANGED
-                        filepath = normed                                          # CHANGED
+                if normalize:
+                    normed = os.path.join(tmpdir, "normed_" + os.path.basename(filepath))
+                    ok = await loop.run_in_executor(None, lambda: _normalize_audio(filepath, normed))
+                    if ok:
+                        filepath = normed
 
                 size_mb  = os.path.getsize(filepath) / (1024 * 1024)
                 if size_mb > MAX_FILE_SIZE_MB:
@@ -437,7 +509,7 @@ def setup(tree: app_commands.CommandTree):
         status_msg = await interaction.followup.send("Starting download…", wait=True)
         try:
             target_height = 1080 if quality == "auto" else int(quality)
-            filepath, fs_url = await attempt_download(url, target_height, status_msg, clean_filename, normalize)  # CHANGED
+            filepath, fs_url = await attempt_download(url, target_height, status_msg, clean_filename, normalize)
 
             if not filepath and not fs_url:
                 await status_msg.edit(
