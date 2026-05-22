@@ -7,3 +7,4 @@ todo
 app/spotify/music.py.bak
 app/ai.py.bak
 app/lapplandv2.bak
+.venv/
