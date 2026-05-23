@@ -22,6 +22,7 @@ from config import (
     SPOTIFY_PLAYLIST_MAX_SONGS,
 )
 from .video_fix import _probe, _needs_remux, _remux_fix, _fix_video_pts, _compress_to_target, _normalize_audio
+from spotify.audio import search_and_download_audio
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -196,38 +197,109 @@ async def download_spotify_track(
     url: str,
     normalize: bool = False,
 ):
-    status = await interaction.followup.send("Fetching track via spotdl…", wait=True)
+    status = await interaction.followup.send("Fetching track…", wait=True)
 
     loop = asyncio.get_event_loop()
-    with tempfile.TemporaryDirectory() as tmpdir:
-        try:
-            files, stderr = await loop.run_in_executor(None, lambda: _run_spotdl(url, tmpdir))
-        except Exception as e:
-            await status.edit(content=f"spotdl failed: `{e}`")
+
+    # ── Non-ASCII pre-check: skip spotdl for CJK/Arabic/etc. titles ────────────
+    _use_ytdlp = False
+    _sp_meta = None
+    try:
+        from spotify.spotify_api import fetch_spotify_track_meta
+        _sp_meta = await fetch_spotify_track_meta(url)
+        if _sp_meta:
+            _combined = f"{_sp_meta.get('title', '')} {_sp_meta.get('artist', '')}"
+            if re.search(r"[Ѐ-ӿ؀-ۿ一-鿿぀-ヿ가-힯]", _combined):
+                print(f"[download_spotify_track] non-ASCII in '{_combined}' — skipping spotdl")
+                _use_ytdlp = True
+    except Exception as e:
+        print(f"[download_spotify_track] metadata peek failed: {e}")
+
+    def _make_display_name(fp: str, meta: dict | None) -> str:
+        """Build 'Title - Artist.mp3' from meta, falling back to the raw filename."""
+        ext = os.path.splitext(fp)[1] or ".mp3"
+        if meta:
+            title  = (meta.get("title")  or "").strip()
+            artist = (meta.get("artist") or "").strip()
+            if title and artist:
+                safe = re.sub(r'[\\/:*?"<>|]', "_", f"{title} - {artist}")
+                return safe + ext
+            if title:
+                return re.sub(r'[\\/:*?"<>|]', "_", title) + ext
+        return os.path.basename(fp)
+
+    # ── Resolve filepath + display_name via spotdl or yt-dlp ──────────────────
+    filepath = None
+    display_name = None
+    size_mb = 0.0
+    dest = None
+
+    if _use_ytdlp:
+        await status.edit(content="Non-ASCII title detected — using yt-dlp…")
+        filepath, meta = await search_and_download_audio(url)
+        if not filepath:
+            await status.edit(content="yt-dlp fallback failed.")
             return
+        display_name = _make_display_name(filepath, meta or _sp_meta)
 
-        if not files:
-            err_snippet = stderr.strip().splitlines()[-3:] if stderr.strip() else []
-            err_text = "\n".join(err_snippet) if err_snippet else "no output"
-            await status.edit(content=f"spotdl returned no files.\n```\n{err_text}\n```")
-            return
-
-        filepath = files[0]
-        display_name = os.path.basename(filepath)
-
-        # ── Audio normalization ───────────────────────────────────────────────
         if normalize:
             await status.edit(content="Normalizing audio…")
-            normed = os.path.join(tmpdir, "normed_" + display_name)
+            normed = os.path.join(tempfile.gettempdir(), "normed_" + display_name)
             ok = await loop.run_in_executor(None, lambda: _normalize_audio(filepath, normed))
             if ok:
+                try:
+                    os.remove(filepath)
+                except Exception:
+                    pass
                 filepath = normed
 
         size_mb = os.path.getsize(filepath) / (1024 * 1024)
         dest = os.path.join(tempfile.gettempdir(), display_name)
-        shutil.copy2(filepath, dest)
+        if os.path.abspath(filepath) != os.path.abspath(dest):
+            shutil.copy2(filepath, dest)
+        else:
+            dest = filepath
 
-    # ── Over limit → file server  # CHANGED
+    else:
+        await status.edit(content="Fetching track via spotdl…")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            try:
+                files, stderr = await loop.run_in_executor(None, lambda: _run_spotdl(url, tmpdir))
+            except Exception as e:
+                await status.edit(content=f"spotdl failed: `{e}`")
+                return
+
+            if not files:
+                err_snippet = stderr.strip().splitlines()[-3:] if stderr.strip() else []
+                err_text = "\n".join(err_snippet) if err_snippet else "no output"
+                print(f"[download_spotify_track] spotdl failed, falling back to yt-dlp:\n{err_text}")
+                await status.edit(content="spotdl failed — trying yt-dlp fallback…")
+
+                filepath, meta = await search_and_download_audio(url)
+                if not filepath:
+                    await status.edit(content=f"spotdl and yt-dlp both failed.\n```\n{err_text}\n```")
+                    return
+                display_name = _make_display_name(filepath, meta or _sp_meta)
+            else:
+                filepath = files[0]
+                display_name = _make_display_name(filepath, _sp_meta)
+
+            # ── Audio normalization ────────────────────────────────────────────────────────────────────
+            if normalize:
+                await status.edit(content="Normalizing audio…")
+                normed = os.path.join(tmpdir, "normed_" + display_name)
+                ok = await loop.run_in_executor(None, lambda: _normalize_audio(filepath, normed))
+                if ok:
+                    filepath = normed
+
+            size_mb = os.path.getsize(filepath) / (1024 * 1024)
+            dest = os.path.join(tempfile.gettempdir(), display_name)
+            if os.path.abspath(filepath) != os.path.abspath(dest):
+                shutil.copy2(filepath, dest)
+            else:
+                dest = filepath
+
+    # ── Over limit → file server ───────────────────────────────────────────────────────────────────
     if size_mb > MAX_FILE_SIZE_MB:
         await status.edit(content=f"Track is {size_mb:.1f} MB — sending to file server…")
         fs_url = copy_to_file_server(dest, preferred_name=os.path.splitext(display_name)[0])
@@ -236,19 +308,21 @@ async def download_spotify_track(
         except Exception:
             pass
         if fs_url:
-            await status.edit(content=f"**{display_name}**\n-# Too large for Discord. Download here: <{fs_url}>")
+            await status.edit(content=f"**{display_name}**\n-# Too large for Discord. Download here: <{fs_url}>\n-# Source: <{url}>")
         else:
             await status.edit(content="Track too large for Discord and file server copy failed.")
         return
 
     await status.edit(content=f"Downloaded: **{display_name}**")
-    await interaction.followup.send(file=discord.File(dest, display_name))
+    await interaction.followup.send(
+        file=discord.File(dest, display_name),
+        content=f"-# Source: <{url}>",
+    )
     asyncio.create_task(delayed_delete(status, delay=5))
     try:
         os.remove(dest)
     except Exception:
         pass
-
 
 async def download_spotify_playlist(
     interaction: discord.Interaction,
