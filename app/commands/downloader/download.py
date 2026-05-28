@@ -104,25 +104,15 @@ def _is_spotify_playlist_url(url: str) -> bool:
 # ── Download command helpers ───────────────────────────────────────────────────
 
 def copy_to_file_server(src: str, preferred_name: str = "") -> str | None:
-    """
-    Copy `src` to the file server's watched folder.
-    If `preferred_name` is provided, uses it as the filename (sanitized);
-    otherwise falls back to a random 256-bit hex token.
-    Remuxes with faststart so browsers can stream it.
-    Returns a direct download URL, or None on failure.
-    Schedules auto-deletion after FILE_EXPIRY_SECONDS.
-    """
     try:
         os.makedirs(FILE_SERVER_PATH, exist_ok=True)
         ext = os.path.splitext(src)[1]
 
-        if preferred_name:
-            safe = re.sub(r'[\\/:*?"<>|]', "_", preferred_name).strip(" .")
-            hashed_name = f"{safe}{ext}" if safe else secrets.token_hex(32) + ext
-        else:
-            hashed_name = secrets.token_hex(32) + ext
-
+        # Always use a random token for the URL/disk path
+        token = secrets.token_hex(32)
+        hashed_name = token + ext
         dest = os.path.join(FILE_SERVER_PATH, hashed_name)
+
         result = subprocess.run([
             "ffmpeg", "-y", "-i", src,
             "-c", "copy",
@@ -131,7 +121,20 @@ def copy_to_file_server(src: str, preferred_name: str = "") -> str | None:
         ], capture_output=True, timeout=120)
         if result.returncode != 0 or not os.path.exists(dest):
             shutil.copy2(src, dest)
+
+        # Write sidecar with the display name nginx will use for Content-Disposition
+        if preferred_name:
+            safe = re.sub(r'[\\/:*?"<>|]', "_", preferred_name).strip(" .")
+            display = safe + ext if safe else hashed_name
+        else:
+            display = hashed_name
+
+        sidecar = dest + ".name"
+        with open(sidecar, "w", encoding="utf-8") as f:
+            f.write(display)
+
         asyncio.create_task(_delete_after(dest, FILE_EXPIRY_SECONDS))
+        asyncio.create_task(_delete_after(sidecar, FILE_EXPIRY_SECONDS))  # clean up sidecar too
         return f"{FILE_SERVER_BASE_URL}/downloads/{hashed_name}"
     except Exception:
         return None
