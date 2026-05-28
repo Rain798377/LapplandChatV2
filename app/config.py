@@ -15,7 +15,7 @@ SPOTIFY_CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET")
 
 # File handling
 FILE_SERVER_PATH      = "/srv/downloads"
-FILE_SERVER_BASE_URL  = "http://154.27.185.186:9090"
+FILE_SERVER_BASE_URL  = "http://154.27.185.186:9091"
 FILE_EXPIRY_SECONDS   = 43200
 
 # Bot config
