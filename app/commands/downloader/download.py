@@ -1,6 +1,7 @@
 import os
 import re
 import sys
+import json
 import glob
 import shutil
 import asyncio
@@ -21,7 +22,7 @@ from config import (
     NORMALIZE_AUDIO,
     SPOTIFY_PLAYLIST_MAX_SONGS,
 )
-from .video_fix import _probe, _needs_remux, _remux_fix, _fix_video_pts, _compress_to_target, _normalize_audio
+from .video_fix import _probe, _needs_remux, _remux_fix, _fix_video_pts, _compress_to_target, _normalize_audio, _is_corrupt
 from spotify.audio import search_and_download_audio
 
 
@@ -76,6 +77,50 @@ def get_video_opts(outtmpl: str, height: int) -> dict:
         }],
     }
 
+def _salvage_corrupted_video(src: str, dest: str) -> bool:
+    """Fallback: Force raw conversion to strip bad NAL units."""
+    intermediate = src + ".avi"
+    try:
+        # Step 1: Raw dump to ignore errors (strips corrupt stream headers)
+        subprocess.run([
+            "ffmpeg", "-y", "-err_detect", "ignore_err",
+            "-i", src, "-c:v", "rawvideo", "-pix_fmt", "yuv420p",
+            "-c:a", "pcm_s16le", intermediate
+        ], check=True, capture_output=True)
+
+        # Step 2: Probe audio duration from the intermediate to clamp re-encode.
+        # Corrupt sources can produce AVIs with inflated/garbage video duration;
+        # the PCM audio track is always the reliable length reference.
+        to_args = []
+        try:
+            probe_out = subprocess.check_output([
+                "ffprobe", "-v", "quiet", "-print_format", "json",
+                "-show_streams", intermediate,
+            ], timeout=30)
+            probe_streams = json.loads(probe_out).get("streams", [])
+            audio_s = next(
+                (float(s["duration"]) for s in probe_streams
+                 if s.get("codec_type") == "audio" and s.get("duration") not in (None, "N/A")),
+                None,
+            )
+            if audio_s and audio_s > 0:
+                to_args = ["-to", f"{audio_s:.3f}"]
+        except Exception:
+            pass  # no clamp — better than failing entirely
+
+        # Step 3: Re-encode from the clean intermediate, clamped to audio length
+        subprocess.run([
+            "ffmpeg", "-y", "-i", intermediate,
+            *to_args,
+            "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p",
+            dest
+        ], check=True, capture_output=True)
+        return True
+    except subprocess.CalledProcessError:
+        return False
+    finally:
+        if os.path.exists(intermediate):
+            os.remove(intermediate)
 
 def _first_entry(info: dict | None) -> dict:
     if not info:
@@ -444,17 +489,40 @@ async def attempt_download(
         src       = max(files, key=os.path.getsize)
         base_name = os.path.splitext(os.path.basename(src))[0] + ".mp4"
 
-        # ── HE-AAC / bad timebase / wrong video PTS fix ───────────────────────
-        needs_fix, pts_mul, fix_type = await loop.run_in_executor(None, lambda: _needs_remux(src))
-        if needs_fix:
-            if fix_type == "video":
-                await _status(f"Detected video PTS mismatch — fixing video speed (pts×{pts_mul:.4g})…")
-                fixed = os.path.join(tmpdir, "fixed_" + base_name)
-                ok = await loop.run_in_executor(None, lambda: _fix_video_pts(src, fixed, pts_mul))
-            else:
-                await _status(f"Detected audio timing issue — remuxing (pts×{pts_mul:.4g})…")
-                fixed = os.path.join(tmpdir, "fixed_" + base_name)
-                ok = await loop.run_in_executor(None, lambda: _remux_fix(src, fixed, pts_mul))
+        # ── HE-AAC / bad timebase / wrong video PTS fix / corrupt video fix ───────────────────────
+        # If the file is so corrupt that _needs_remux itself throws (ffprobe can't
+        # read it at all), treat it as needing salvage immediately rather than
+        # silently returning needs_fix=False and potentially skipping _is_corrupt too.
+        needs_fix, pts_mul, fix_type = False, 1.0, "audio"
+        _needs_remux_threw = False
+        try:
+            needs_fix, pts_mul, fix_type = await loop.run_in_executor(None, lambda: _needs_remux(src))
+        except Exception:
+            _needs_remux_threw = True
+
+        # 2. Check for stream-level corruption (if timing was fine and probe didn't throw)
+        is_corrupt = _needs_remux_threw
+        if not needs_fix and not _needs_remux_threw:
+            is_corrupt = await loop.run_in_executor(None, lambda: _is_corrupt(src))
+
+        # 3. Determine if we need to perform an operation
+        if needs_fix or is_corrupt:
+            fixed = os.path.join(tmpdir, "fixed_" + base_name)
+            ok = False
+
+            if needs_fix:
+                if fix_type == "video":
+                    await _status(f"Detected video PTS mismatch — fixing… (pts×{pts_mul:.4g})")
+                    ok = await loop.run_in_executor(None, lambda: _fix_video_pts(src, fixed, pts_mul))
+                else:
+                    await _status(f"Detected audio timing issue — remuxing… (pts×{pts_mul:.4g})")
+                    ok = await loop.run_in_executor(None, lambda: _remux_fix(src, fixed, pts_mul))
+
+            # FALLBACK: If standard fix fails OR we are only here for corruption/total probe failure
+            if not ok:
+                await _status("Attempting deep repair/salvage…")
+                ok = await loop.run_in_executor(None, lambda: _salvage_corrupted_video(src, fixed))
+
             if ok:
                 src = fixed
 

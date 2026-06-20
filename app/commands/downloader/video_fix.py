@@ -268,7 +268,29 @@ def _fix_video_pts(src: str, dest: str, pts_mul: float) -> bool:
         return result.returncode == 0 and os.path.exists(dest)
     except Exception:
         return False
+    
+def _is_corrupt(filepath: str) -> bool:
+    """
+    Performs a deep integrity check by attempting to decode the video stream.
+    Returns True if decoding fails (file is corrupt), False if healthy.
 
+    Checks both return code AND stderr output: severely corrupt files can
+    exit 0 while still emitting error lines that indicate bad NAL units,
+    invalid bitstream, or unreadable headers.
+    """
+    try:
+        result = subprocess.run([
+            "ffmpeg", "-v", "error", "-i", filepath,
+            "-map", "0:v:0", "-f", "null", "-"
+        ], capture_output=True, timeout=60)
+
+        if result.returncode != 0:
+            return True
+
+        stderr = result.stderr.decode("utf-8", errors="replace").strip()
+        return bool(stderr)
+    except Exception:
+        return True
 
 def _normalize_audio(src: str, dest: str) -> bool:
     """
