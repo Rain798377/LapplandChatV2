@@ -22,7 +22,7 @@ from config import (
     NORMALIZE_AUDIO,
     SPOTIFY_PLAYLIST_MAX_SONGS,
 )
-from .video_fix import _probe, _needs_remux, _remux_fix, _fix_video_pts, _compress_to_target, _normalize_audio, _is_corrupt
+from .video_fix import _probe, _needs_remux, _remux_fix, _fix_video_pts, _trim_to_audio, _compress_to_target, _normalize_audio, _is_corrupt
 from spotify.audio import search_and_download_audio
 
 
@@ -511,7 +511,10 @@ async def attempt_download(
             ok = False
 
             if needs_fix:
-                if fix_type == "video":
+                if fix_type == "trim":
+                    await _status(f"Detected inflated container duration — trimming to {pts_mul:.3f}s…")
+                    ok = await loop.run_in_executor(None, lambda: _trim_to_audio(src, fixed, pts_mul))
+                elif fix_type == "video":
                     await _status(f"Detected video PTS mismatch — fixing… (pts×{pts_mul:.4g})")
                     ok = await loop.run_in_executor(None, lambda: _fix_video_pts(src, fixed, pts_mul))
                 else:
