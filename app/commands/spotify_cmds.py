@@ -5,10 +5,11 @@ import aiohttp
 import discord
 from mutagen.mp3 import MP3
 from discord import app_commands
-from spotify.spotify_player import (_cancel_autoplay, play_next, play_local_file, voice_states, FFMPEG_OPTIONS)
-from spotify.audio import search_and_download_audio
-from spotify.embed import build_now_playing_embed
-from spotify.resolver import _is_playlist_url, _is_spotify_url, _is_apple_music_url, _is_youtube_url, _is_soundcloud_url, resolve_apple_music_to_query, resolve_playlist_tracks
+from services.spotify.spotify_player import (_cancel_autoplay, play_next, play_local_file, voice_states, FFMPEG_OPTIONS)
+from services.spotify.audio import search_and_download_audio
+from services.spotify.embed import build_now_playing_embed
+from services.spotify.resolver import _is_playlist_url, _is_spotify_url, _is_apple_music_url, _is_youtube_url, _is_soundcloud_url, resolve_apple_music_to_query, resolve_playlist_tracks
+from core.status import AnimatedStatus
 
 
 def _label_title(label: str) -> str:
@@ -73,7 +74,7 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
 
         _cancel_autoplay(guild_id)
         should_queue = vc.is_playing() or vc.is_paused()
-        status = await interaction.followup.send("Searching...", wait=True)
+        status = AnimatedStatus(await interaction.followup.send("Searching...", wait=True))
 
         # ── Playlist / multi-track URLs ───────────────────────────────────────
         if _is_playlist_url(query):
@@ -397,7 +398,7 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
 
         _cancel_autoplay(guild_id)
 
-        status = await interaction.followup.send(f"Downloading `{file.filename}`...", wait=True)
+        status = AnimatedStatus(await interaction.followup.send(f"Downloading `{file.filename}`...", wait=True))
 
         dest = os.path.join(tempfile.gettempdir(), file.filename)
         async with aiohttp.ClientSession() as session:

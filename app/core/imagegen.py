@@ -19,11 +19,11 @@ import os
 import hashlib
 import time
 from huggingface_hub import InferenceClient
-from colors import *
+from core.colors import *
 
 HF_TOKEN = None
 try:
-    from config import HF_TOKEN
+    from core.config import HF_TOKEN
 except ImportError:
     pass
 

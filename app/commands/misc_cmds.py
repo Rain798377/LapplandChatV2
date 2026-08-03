@@ -5,8 +5,8 @@ import os
 import urllib.request
 import aiohttp
 import discord
-import ai
 import tempfile
+from core import ai
 from datetime import datetime
 from fontTools.ttLib import TTFont
 from discord import app_commands
@@ -173,8 +173,8 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
 
         recorded_at = datetime.now().strftime("%B %d, %Y at %I:%M %p")
 
-        BASE_DIR       = os.path.dirname(os.path.abspath(__file__))
-        FONTS_DIR      = os.path.join(BASE_DIR, "fonts")
+        BASE_DIR       = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        FONTS_DIR      = os.path.join(BASE_DIR, "assets", "fonts")
         font_reg_path  = os.path.join(FONTS_DIR, "DejaVuSans.ttf")
         font_bold_path = os.path.join(FONTS_DIR, "DejaVuSans-Bold.ttf")
         noto_cjk_path  = os.path.join(FONTS_DIR, "NotoSansCJK-Regular.ttc")
@@ -386,8 +386,8 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
 
         recorded_at = message.created_at.strftime("%B %d, %Y at %I:%M %p")
 
-        BASE_DIR       = os.path.dirname(os.path.abspath(__file__))
-        FONTS_DIR      = os.path.join(BASE_DIR, "fonts")
+        BASE_DIR       = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        FONTS_DIR      = os.path.join(BASE_DIR, "assets", "fonts")
         font_reg_path  = os.path.join(FONTS_DIR, "DejaVuSans.ttf")
         font_bold_path = os.path.join(FONTS_DIR, "DejaVuSans-Bold.ttf")
         noto_cjk_path  = os.path.join(FONTS_DIR, "NotoSansCJK-Regular.ttc")

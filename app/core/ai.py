@@ -3,8 +3,8 @@ import base64
 import random
 import httpx
 from groq import Groq
-from config import GROQ_API_KEY, SYSTEM_PROMPT, MOODS, MAX_HISTORY, MODEL
-from memory import get_user_memory_string
+from core.config import GROQ_API_KEY, SYSTEM_PROMPT, MOODS, MAX_HISTORY, MODEL
+from core.memory import get_user_memory_string
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 
