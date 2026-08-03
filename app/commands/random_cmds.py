@@ -2,7 +2,7 @@ import secrets
 import requests
 import discord
 import aiohttp
-from app.config import *
+from core.config import *
 from discord import app_commands
 
 

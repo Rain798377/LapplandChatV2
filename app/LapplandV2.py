@@ -1,20 +1,16 @@
 import random
 import discord
-import ai
-import sys
 import os
 from discord import app_commands
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
-from commands.downloader import download
-from config import (DISCORD_TOKEN, ALLOWED_CHANNELS, MIN_CHARS, REPLY_TO_ALL, REPLY_CHANCE, GREETINGS)
-from memory import load_memory, update_memory_from_conversation
-from ai import (groq_client, histories, get_ai_response, add_to_history, maybe_shift_mood)
-from imagegen import generate_image
-from commands import random_cmds, memory_cmds, misc_cmds, spotify_cmds
-from checksum import checksum
-from colors import *
+from core import ai
+from core.config import (DISCORD_TOKEN, ALLOWED_CHANNELS, MIN_CHARS, REPLY_TO_ALL, REPLY_CHANCE, GREETINGS)
+from core.memory import load_memory, update_memory_from_conversation
+from core.ai import (groq_client, histories, get_ai_response, add_to_history, maybe_shift_mood)
+from core.imagegen import generate_image
+from core.checksum import checksum
+from core.colors import *
+from commands import random_cmds, memory_cmds, misc_cmds, spotify_cmds, downloader_cmds
 
 #checksum()
 
@@ -25,7 +21,7 @@ bot  = discord.Client(intents=intents)
 tree = app_commands.CommandTree(bot)
 
 # ── Register commands ─────────────────────────────────────────────────────────
-download.setup(tree)
+downloader_cmds.setup(tree)
 random_cmds.setup(tree)
 memory_cmds.setup(tree)
 misc_cmds.setup(tree, bot)

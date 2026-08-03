@@ -1,7 +1,7 @@
 import re
 import time
 import aiohttp
-from config import SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET
+from core.config import SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET
 
 
 # ── Token cache ───────────────────────────────────────────────────────────────

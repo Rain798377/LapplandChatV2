@@ -2,7 +2,7 @@ import json
 import tempfile
 import discord
 from discord import app_commands
-from memory import load_memory, save_memory
+from core.memory import load_memory, save_memory
 
 
 class EditMemoryModal(discord.ui.Modal, title="Edit Your Memory"):

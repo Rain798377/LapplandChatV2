@@ -1,7 +1,7 @@
 import os
 import json
-from colors import *
-from config import MEMORY_FILE
+from core.colors import *
+from core.config import MEMORY_FILE
 
 
 def load_memory() -> dict:

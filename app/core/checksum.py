@@ -17,8 +17,9 @@ def header(msg): print(f"\n{BOLD}{CYAN}{msg}{RESET}", flush=True)
 
 
 # ── 1. Internal modules ───────────────────────────────────────────────────────
-INTERNAL_MODULES = ["config", "ai", "memory", "commands.download",
-                    "commands.random_cmds", "commands.memory_cmds", "commands.misc_cmds"]
+INTERNAL_MODULES = ["core.config", "core.ai", "core.memory", "commands.downloader_cmds",
+                    "commands.random_cmds", "commands.memory_cmds", "commands.misc_cmds",
+                    "commands.spotify_cmds"]
 
 def check_imports() -> int:
     header("[ 1/3 ] Internal modules")
@@ -36,13 +37,14 @@ def check_imports() -> int:
 # ── 2. Checksums ──────────────────────────────────────────────────────────────
 EXPECTED_FILES = [
     "LapplandV2.py",
-    "config.py",
-    "ai.py",
-    "memory.py",
-    "commands/download.py",
+    "core/config.py",
+    "core/ai.py",
+    "core/memory.py",
+    "commands/downloader_cmds.py",
     "commands/random_cmds.py",
     "commands/memory_cmds.py",
     "commands/misc_cmds.py",
+    "commands/spotify_cmds.py",
 ]
 
 def check_checksums() -> int:

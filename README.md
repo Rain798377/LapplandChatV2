@@ -45,6 +45,7 @@ export GROQ_API_KEY=your_groq_api_key
 ### 3. Run
 
 ```bash
+cd app
 python LapplandV2.py
 ```
 
@@ -67,7 +68,7 @@ docker-compose up -d
 
 ## Configuration
 
-All config lives in `config.py`:
+All config lives in `app/core/config.py`:
 
 | Variable | Default | Description |
 |---|---|---|
@@ -93,15 +94,33 @@ Users can manage their own memory via `/memory view`, `/memory edit`, and `/memo
 
 ```
 LapplandChatV2/
-├── LapplandV2.py        # Entry point
-├── config.py            # Constants and environment variables
-├── ai.py                # AI responses, mood logic, Groq client
-├── memory.py            # Load, save, and update user memory
-└── commands/
-    ├── download.py      # /download — video/audio + Spotify support
-    ├── random_cmds.py   # /random — number, coin, die, choice, word
-    ├── memory_cmds.py   # /memory — view, edit, wipe
-    └── misc_cmds.py     # /ship, /mood, /8ball, /quote
+├── app/
+│   ├── LapplandV2.py           # Entry point
+│   ├── core/                   # Shared internals
+│   │   ├── config.py           # Constants and environment variables
+│   │   ├── ai.py                # AI responses, mood logic, Groq client
+│   │   ├── memory.py            # Load, save, and update user memory
+│   │   ├── colors.py            # ANSI color codes for console output
+│   │   ├── checksum.py          # Optional startup self-check
+│   │   └── imagegen.py          # /imagine image generation
+│   ├── commands/                # Discord slash command modules
+│   │   ├── downloader_cmds.py   # /download — video/audio + Spotify support
+│   │   ├── random_cmds.py       # /random — number, coin, die, choice, word
+│   │   ├── memory_cmds.py       # /memory — view, edit, wipe
+│   │   ├── misc_cmds.py         # /ship, /mood, /8ball, /quote
+│   │   └── spotify_cmds.py      # /play, /skip, /queue, and other music commands
+│   ├── services/                # Support logic, not directly wired to commands
+│   │   ├── downloader/
+│   │   │   └── video_fix.py     # Detects and repairs broken downloaded media
+│   │   └── spotify/              # Spotify resolution, playback, audio search/download
+│   ├── assets/
+│   │   └── fonts/                # Fonts used to render /quote images
+│   └── tools/
+│       └── video_tools/          # Standalone scripts, not imported by the bot
+│           └── mp4_frame_inflate.py   # Reproduces a container sample-count inflation trick,
+│                                       # used as a test case for services/downloader/video_fix.py
+├── backups/                      # Old file versions kept locally (gitignored)
+└── data/                         # Runtime data (memory.json, etc.)
 ```
 
 ---

@@ -3,7 +3,7 @@ import re
 import asyncio
 import random
 import discord
-from config import AUTOPLAY_DELAY, MAX_FILE_SIZE_MB, DEFAULT_VOLUME
+from core.config import AUTOPLAY_DELAY, MAX_FILE_SIZE_MB, DEFAULT_VOLUME
 from .utils import _apply_loudnorm
 from .audio import search_and_download_audio
 from .embed import build_now_playing_embed

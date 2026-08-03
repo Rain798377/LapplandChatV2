@@ -12,7 +12,7 @@ import aiohttp
 import yt_dlp
 import discord
 from discord import app_commands
-from config import (
+from core.config import (
     MAX_FILE_SIZE_MB,
     # SPOTIFY_CLIENT_ID,    # unused with SpotipyFree default; uncomment if switching to official API
     # SPOTIFY_CLIENT_SECRET,
@@ -22,8 +22,10 @@ from config import (
     NORMALIZE_AUDIO,
     SPOTIFY_PLAYLIST_MAX_SONGS,
 )
-from .video_fix import _probe, _needs_remux, _remux_fix, _fix_video_pts, _trim_to_audio, _compress_to_target, _normalize_audio, _is_corrupt
-from spotify.audio import search_and_download_audio
+from services.downloader.video_fix import _probe, _needs_remux, _remux_fix, _fix_video_pts, _trim_to_audio, _compress_to_target, _normalize_audio, _is_corrupt
+from services.spotify.audio import search_and_download_audio
+from tools.video_tools.mp4_frame_inflate import process as _inflate_process
+from core.status import AnimatedStatus
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -32,6 +34,8 @@ async def delayed_delete(*messages, delay: float = 1):
     await asyncio.sleep(delay)
     for msg in messages:
         try:
+            if isinstance(msg, AnimatedStatus):
+                await msg.stop()
             await msg.delete()
         except Exception:
             pass
@@ -245,7 +249,7 @@ async def download_spotify_track(
     url: str,
     normalize: bool = False,
 ):
-    status = await interaction.followup.send("Fetching track…", wait=True)
+    status = AnimatedStatus(await interaction.followup.send("Fetching track…", wait=True))
 
     loop = asyncio.get_event_loop()
 
@@ -253,7 +257,7 @@ async def download_spotify_track(
     _use_ytdlp = False
     _sp_meta = None
     try:
-        from spotify.spotify_api import fetch_spotify_track_meta
+        from services.spotify.spotify_api import fetch_spotify_track_meta
         _sp_meta = await fetch_spotify_track_meta(url)
         if _sp_meta:
             _combined = f"{_sp_meta.get('title', '')} {_sp_meta.get('artist', '')}"
@@ -379,10 +383,10 @@ async def download_spotify_playlist(
 ):
     import zipfile as _zipfile
 
-    status = await interaction.followup.send(
+    status = AnimatedStatus(await interaction.followup.send(
         f"Fetching playlist via spotdl (max {SPOTIFY_PLAYLIST_MAX_SONGS} songs)…",
         wait=True,
-    )
+    ))
 
     loop = asyncio.get_event_loop()
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -662,7 +666,7 @@ def setup(tree: app_commands.CommandTree):
         # ── Video path ─────────────────────────────────────────────────────────
         filepath   = None
         fs_url     = None
-        status_msg = await interaction.followup.send("Starting download…", wait=True)
+        status_msg = AnimatedStatus(await interaction.followup.send("Starting download…", wait=True))
         try:
             target_height = 1080 if quality == "auto" else int(quality)
             filepath, fs_url = await attempt_download(url, target_height, status_msg, clean_filename, normalize)
@@ -699,8 +703,59 @@ def setup(tree: app_commands.CommandTree):
             await interaction.followup.send(f"Couldn't download video: `{e}`")
 
         finally:
+            await status_msg.stop()
             if filepath:
                 try:
                     os.remove(filepath)
                 except Exception:
                     pass
+
+    @tree.command(name="frame_inflate", description="Inflate a video's reported frame count with fake sample-table entries (container metadata only)")
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+    @app_commands.describe(
+        video="The MP4 to modify",
+        multiplier="Fake frames added = real_count * multiplier (default 9 -> ~10x reported count)",
+    )
+    async def frame_inflate(
+        interaction: discord.Interaction,
+        video: discord.Attachment,
+        multiplier: app_commands.Range[int, 1, 50] = 9,
+    ):
+        await interaction.response.defer(thinking=True)
+
+        if not video.filename.lower().endswith(".mp4"):
+            await interaction.followup.send("Only .mp4 files are supported.")
+            return
+
+        status = AnimatedStatus(await interaction.followup.send(f"Downloading `{video.filename}`…", wait=True))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            in_path  = os.path.join(tmpdir, video.filename)
+            out_path = os.path.join(tmpdir, "inflated_" + video.filename)
+
+            try:
+                await video.save(in_path)
+            except Exception as e:
+                await status.stop(f"Couldn't download that attachment: `{e}`")
+                return
+
+            await status.edit(content="Inflating frame count…")
+            loop = asyncio.get_event_loop()
+            try:
+                await loop.run_in_executor(None, lambda: _inflate_process(in_path, out_path, multiplier))
+            except SystemExit as e:
+                await status.stop(f"Couldn't process that file: {e}")
+                return
+            except Exception as e:
+                await status.stop(f"Failed to inflate video: `{e}`")
+                return
+
+            size_mb = os.path.getsize(out_path) / (1024 * 1024)
+            if size_mb > MAX_FILE_SIZE_MB:
+                await status.stop(f"Output came out {size_mb:.1f} MB — too big to upload.")
+                return
+
+            await status.edit(content="Uploading…")
+            await interaction.followup.send(file=discord.File(out_path, video.filename))
+            asyncio.create_task(delayed_delete(status, delay=1))
