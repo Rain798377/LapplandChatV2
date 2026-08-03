@@ -22,70 +22,115 @@ def _probe(filepath: str) -> tuple[float, int]:
         return 0.0, 0
 
 
+def _count_frames(filepath: str, timeout: int = 120) -> int | None:
+    """
+    Decode-based frame count — ground truth for the video stream.
+
+    Stream-level `nb_frames` (from `-show_streams`) is just a metadata field
+    written by the muxer, and on some broken encoder writes it gets inflated
+    by the *same* bad factor as `duration_ts` rather than being an
+    independently-measured count. When that happens, comparing `nb_frames /
+    fps` against anything else just compares the bad duration against
+    itself. Decoding and counting actual frames (`-count_frames`) sidesteps
+    that since it never reads `duration_ts` or `nb_frames` at all.
+
+    Slower than reading metadata, so this is only called when the metadata
+    value is already suspect — not on every file.
+    """
+    try:
+        out = subprocess.check_output([
+            "ffprobe", "-v", "error", "-count_frames",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=nb_read_frames",
+            "-print_format", "json",
+            filepath,
+        ], timeout=timeout)
+        info = json.loads(out)
+        streams = info.get("streams", [])
+        if streams:
+            n = streams[0].get("nb_read_frames")
+            if n and n != "N/A":
+                return int(n)
+    except Exception:
+        pass
+    return None
+
+
 def _needs_remux(filepath: str) -> tuple[bool, float, str]:
     """
     Detect whether a file has timing problems that require a remux.
 
     Returns (needs_fix: bool, pts_mul: float, fix_type: str) where:
-      - pts_mul  : video PTS multiplier to apply during the fix
+      - pts_mul  : video PTS multiplier (for "video" fix_type) or audio ratio
+                   (for "audio" fix_type); unused for "trim" fix_type
       - fix_type : "audio"  → broken audio; use _remux_fix (re-encodes audio from PCM)
                    "video"  → broken video PTS; use _fix_video_pts (re-encodes video,
                               copies audio untouched)
+                   "trim"   → video duration metadata inflated but frames are correct;
+                              use _trim_to_audio (stream-copy, -to audio_dur)
 
-    Detection covers five independent failure modes, checked in priority order:
+    Detection covers six independent failure modes, checked in priority order.
+    All duration-ratio comparisons use a dynamic threshold derived from the
+    actual stream durations rather than a fixed magic number: anything beyond
+    a 10% relative difference (DURATION_SKEW_TOLERANCE = 0.10) is considered
+    misaligned.
 
-    ── CASE 1: Explicit HE-AAC (existing behaviour, unchanged) ──────────────
+    ── CASE 1: Explicit HE-AAC ──────────────────────────────────────────────
     Profile string contains "he" (e.g. "HE-AAC v1", "HE-AAC v2").
     The SBR layer doubles the effective sample rate, so the muxed audio
     timestamps run at 2× real-time.  Fix: slow video by 0.5× (audio fix path).
 
     ── CASE 2: Implicit SBR / LC-labelled HE-AAC ────────────────────────────
-    Some encoders (iOS screen recorder, libfdk_aac in certain modes, many
-    Android/OEM encoders) write profile=LC in the MPEG-4 Audio Object Type
-    (AOT 2) even though SBR is active.  ffprobe reports "LC" because it reads
-    the AOT, not the decoded frame behaviour.
-
+    Some encoders write profile=LC even though SBR is active. ffprobe reports
+    "LC" because it reads the AOT, not the decoded frame behaviour.
     Signature: profile == "LC" but average audio samples/frame is in
-    [1200, 2200] — well above the standard AAC-LC window of 1024 but below
-    the HE-AAC v2 ceiling of ~2048.  The old threshold of >3000 completely
-    missed this range.
+    [1200, 2200].  Guard: only act when stream durations are actually
+    misaligned beyond DURATION_SKEW_TOLERANCE.
+    Fix: re-encode audio from decoded PCM; pts_mul = audio_dur / video_dur.
 
-    Guard: only act when the stream durations are actually misaligned
-    (audio_dur / video_dur > 1.4 or < 0.71).  A well-muxed file can have
-    ~2048 spf (SBR present but correctly timestamped) while durations match
-    perfectly — that is NOT broken and must not be touched.
-
-    Fix: re-encode audio from decoded PCM (audio fix path); pts_mul =
-    audio_dur / video_dur so any residual drift is absorbed.
+    ── CASE 2b: Inflated duration_ts on genuine AAC-LC ──────────────────────
+    Real audio duration (nb_frames * 1024 / sample_rate) is significantly
+    shorter than video_dur_s, indicating the duration_ts field is wrong.
+    Fix: audio fix path, pts_mul = real_audio_dur / video_dur.
 
     ── CASE 3: Edit-list / encoder-delay mismatch ───────────────────────────
     The MP4 edit list (elst box) trims the video start by T_v seconds, while
     the audio track has an encoder pre-roll of T_a seconds (negative start
-    PTS).  When T_a ≠ T_v the streams are misaligned by (T_a − T_v).
-
+    PTS).  When T_a ≠ T_v the streams are misaligned.
     Fix: audio fix path, pts_mul = 1.0 (re-encode normalises timestamps).
 
     ── CASE 4: Variable audio frame duration ────────────────────────────────
     A well-formed AAC-LC stream has exactly 1024 samples per frame.
     High coefficient of variation (std_dev / mean > 0.15) signals broken
     muxer timing.
-
     Fix: audio fix path, pts_mul computed from actual durations.
 
-    ── CASE 5: Video / audio duration mismatch (video PTS wrong) ────────────
-    Occurs when yt-dlp merges streams whose PTS were never aligned — most
-    commonly a DASH video track stamped with doubled timestamps (e.g. the
-    source was 30 fps but the container claims 60 fps with the original 30-fps
-    PTS values, making every frame appear twice as long).  Symptom: video plays
-    at half speed while audio is perfectly normal.
+    ── CASE 5: Video PTS stretched (video plays too slow) ───────────────────
+    video_dur_s is significantly longer than audio_dur_s AND the frame count
+    at the declared fps does not match audio_dur_s — meaning the PTS values
+    themselves are wrong (e.g. DASH 30fps track muxed with 60fps timestamps).
+    Fix: video fix path — re-encode video with setpts=pts_mul*PTS.
+    pts_mul = audio_dur_s / video_dur_s.
 
-    Signature: video_dur / audio_dur > 1.4   (video is at least 40% longer
-               than audio — way outside any normal encoder-delay margin).
+    ── CASE 6: Inflated container duration (frames are correct) ─────────────
+    video_dur_s is significantly longer than audio_dur_s BUT
+    nb_frames / avg_fps ≈ audio_dur_s — the actual encoded frames cover only
+    the audio-length window; the container duration field is simply wrong.
+    Symptom: video plays fine for audio_dur_s then jumps/freezes to the end.
+    Fix: trim — stream-copy with -to audio_dur_s, no re-encode needed.
+    pts_mul is returned as audio_dur_s (the trim target) for the caller.
 
-    Fix: video fix path — re-encode video with setpts=(audio_dur/video_dur)*PTS
-    so timestamps are squished to match audio exactly.  Audio is stream-copied
-    untouched.  pts_mul = audio_dur / video_dur (e.g. 0.5 for 2× slow video).
+    NOTE: stream-metadata nb_frames can itself be inflated by the same bad
+    factor as duration_ts on certain broken muxer writes (it wasn't measured
+    independently — it was derived from the corrupt duration field). When
+    nb_frames/fps merely echoes video_dur_s instead of giving new
+    information, this falls back to an actual decoded frame count
+    (_count_frames) before deciding between CASE 5 and CASE 6.
     """
+    # Fraction beyond which two durations are considered misaligned.
+    # e.g. 0.10 → flag if one stream is >10% longer than the other.
+    DURATION_SKEW_TOLERANCE = 0.10
+
     try:
         # ── Full stream + packet metadata ────────────────────────────────────
         stream_out = subprocess.check_output([
@@ -116,10 +161,53 @@ def _needs_remux(filepath: str) -> tuple[bool, float, str]:
         audio_dur_s = _stream_duration_s(audio_stream)
         video_dur_s = _stream_duration_s(video_stream) if video_stream else 0.0
 
-        # ── CASE 5: Video/audio duration mismatch ────────────────────────────
+        # ── CASE 5 / 6: Video longer than audio ──────────────────────────────
         if audio_dur_s > 1.0 and video_dur_s > 1.0:
-            ratio = video_dur_s / audio_dur_s
-            if ratio > 1.4:
+            ratio = video_dur_s / audio_dur_s          # >1 means video is longer
+            skew  = ratio - 1.0                        # normalised excess
+
+            if skew > DURATION_SKEW_TOLERANCE:
+                # Determine whether the actual encoded frames match audio_dur_s
+                # (CASE 6 / trim) or whether the PTS themselves are stretched
+                # (CASE 5 / rescale).
+                #
+                # Heuristic: compute the frame-count-implied duration using the
+                # avg_frame_rate reported by ffprobe.  If that implied duration
+                # is within tolerance of audio_dur_s, the frames are fine and
+                # only the container metadata is wrong → trim.
+                nb_frames  = int(video_stream.get("nb_frames", 0) or 0)
+                fps_str    = video_stream.get("avg_frame_rate", "0/1")
+                try:
+                    fn, fd    = (int(x) for x in fps_str.split("/"))
+                    fps       = fn / fd if fd else 0.0
+                except Exception:
+                    fps = 0.0
+
+                implied_dur = (nb_frames / fps) if (nb_frames > 0 and fps > 0) else None
+
+                # Guard: on some broken muxer writes, stream-metadata
+                # nb_frames is inflated by the same bad factor as
+                # duration_ts (it wasn't independently measured — it was
+                # derived from the same corrupt duration field). When that
+                # happens, implied_dur just echoes video_dur_s back at us
+                # instead of giving an independent signal, so the check
+                # below would always fail and we'd wrongly fall through to
+                # CASE 5. Detect that and re-derive implied_dur from an
+                # actual decode-based frame count instead.
+                if implied_dur is not None and fps > 0:
+                    implied_vs_video_skew = abs(implied_dur - video_dur_s) / video_dur_s
+                    if implied_vs_video_skew <= DURATION_SKEW_TOLERANCE:
+                        real_nb_frames = _count_frames(filepath)
+                        if real_nb_frames:
+                            implied_dur = real_nb_frames / fps
+
+                if implied_dur is not None:
+                    implied_skew = abs(implied_dur - audio_dur_s) / audio_dur_s
+                    if implied_skew <= DURATION_SKEW_TOLERANCE:
+                        # CASE 6: frames cover exactly audio_dur_s — just trim
+                        return True, audio_dur_s, "trim"
+
+                # CASE 5: PTS are genuinely stretched — re-encode with setpts
                 pts_mul = audio_dur_s / video_dur_s
                 return True, pts_mul, "video"
 
@@ -152,7 +240,8 @@ def _needs_remux(filepath: str) -> tuple[bool, float, str]:
         if 1200 < samples_per_frame <= 2200:
             if audio_dur_s > 1.0 and video_dur_s > 1.0:
                 ratio = audio_dur_s / video_dur_s
-                if ratio > 1.4 or ratio < 0.71:
+                skew  = abs(ratio - 1.0)
+                if skew > DURATION_SKEW_TOLERANCE:
                     pts_mul = ratio
                     return True, pts_mul, "audio"
             else:
@@ -162,7 +251,8 @@ def _needs_remux(filepath: str) -> tuple[bool, float, str]:
         if "he" not in profile and video_dur_s > 1.0 and nb_frames_measured >= 10:
             real_audio_dur_s = nb_frames_measured * 1024 / sample_rate
             real_ratio = real_audio_dur_s / video_dur_s
-            if real_ratio < 0.71:
+            shortfall  = 1.0 - real_ratio               # how much shorter real audio is
+            if shortfall > DURATION_SKEW_TOLERANCE:
                 pts_mul = real_ratio
                 return True, pts_mul, "audio"
 
@@ -269,6 +359,29 @@ def _fix_video_pts(src: str, dest: str, pts_mul: float) -> bool:
     except Exception:
         return False
     
+def _trim_to_audio(src: str, dest: str, audio_dur_s: float) -> bool:
+    """
+    Fix a file whose video container duration is inflated but whose encoded
+    frames are correct (CASE 6).  Stream-copies both streams with -to
+    audio_dur_s so no re-encode is needed.
+
+    audio_dur_s is passed in directly from _needs_remux (pts_mul field when
+    fix_type == "trim") so there is no second ffprobe call here.
+    """
+    try:
+        result = subprocess.run([
+            "ffmpeg", "-y",
+            "-i", src,
+            "-to", f"{audio_dur_s:.3f}",
+            "-c", "copy",
+            "-movflags", "+faststart",
+            dest,
+        ], capture_output=True, timeout=300)
+        return result.returncode == 0 and os.path.exists(dest)
+    except Exception:
+        return False
+
+
 def _is_corrupt(filepath: str) -> bool:
     """
     Performs a deep integrity check by attempting to decode the video stream.
