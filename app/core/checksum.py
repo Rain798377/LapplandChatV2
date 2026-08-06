@@ -19,7 +19,8 @@ def header(msg): print(f"\n{BOLD}{CYAN}{msg}{RESET}", flush=True)
 # ── 1. Internal modules ───────────────────────────────────────────────────────
 INTERNAL_MODULES = ["core.config", "core.ai", "core.memory", "commands.downloader_cmds",
                     "commands.random_cmds", "commands.memory_cmds", "commands.misc_cmds",
-                    "commands.spotify_cmds"]
+                    "commands.spotify_cmds", "commands.call_cmds", "services.voice_call.pipeline",
+                    "services.voice_call.sink", "services.voice_call.stt", "services.voice_call.tts"]
 
 def check_imports() -> int:
     header("[ 1/3 ] Internal modules")
@@ -45,6 +46,13 @@ EXPECTED_FILES = [
     "commands/memory_cmds.py",
     "commands/misc_cmds.py",
     "commands/spotify_cmds.py",
+    "commands/call_cmds.py",
+    "services/voice_call/pipeline.py",
+    "services/voice_call/sink.py",
+    "services/voice_call/stt.py",
+    "services/voice_call/tts.py",
+    "services/voice_call/audio.py",
+    "services/voice_call/dave_patch.py",
 ]
 
 def check_checksums() -> int:
@@ -62,7 +70,7 @@ def check_checksums() -> int:
 
 
 # ── 3. Third-party packages ───────────────────────────────────────────────────
-THIRD_PARTY = ["discord", "groq", "yt_dlp", "aiohttp", "PIL", "requests"]
+THIRD_PARTY = ["discord", "discord.ext.voice_recv", "groq", "yt_dlp", "aiohttp", "PIL", "requests"]
 
 def check_third_party() -> int:
     header("[ 3/3 ] Third-party packages")

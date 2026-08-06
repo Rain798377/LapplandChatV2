@@ -13,6 +13,15 @@ HF_TOKEN              = os.environ.get("HF_TOKEN")
 SPOTIFY_CLIENT_ID     = os.environ.get("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET")
 
+# Voice call config
+STT_SERVER_URL         = os.environ.get("STT_SERVER_URL", "http://127.0.0.1:8801")
+TTS_SERVER_URL         = os.environ.get("TTS_SERVER_URL", "http://192.9.148.110:8000/tts")
+TTS_SERVER_TOKEN       = os.environ.get("TTS_SERVER_TOKEN")
+VOICE_MIN_UTTERANCE_MS = 300     # discard buffered speech shorter than this (noise/blips)
+VOICE_IN_SAMPLE_RATE   = 48000   # Discord voice PCM rate (protocol constant)
+VOICE_IN_CHANNELS      = 2       # Discord voice PCM is stereo
+VOICE_STT_SAMPLE_RATE  = 16000   # rate expected by the whisper.cpp sidecar
+
 # File handling
 FILE_SERVER_PATH      = "/srv/downloads"
 FILE_SERVER_BASE_URL  = "http://154.27.185.186:9091"

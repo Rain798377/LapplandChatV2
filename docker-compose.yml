@@ -4,8 +4,18 @@ services:
     environment:
       GROQ_API_KEY: REPLACE_WITH_YOUR_GROQ_API_KEY
       DISCORD_TOKEN: REPLACE_WITH_YOUR_DISCORD_TOKEN
+      TTS_SERVER_URL: http://192.9.148.110:8000/tts
+      TTS_SERVER_TOKEN: REPLACE_WITH_YOUR_TTS_SERVER_TOKEN
+      STT_SERVER_URL: http://stt:8801
     container_name: lappland
     restart: unless-stopped
+    depends_on:
+      - stt
     volumes:
       - ./app:/app
       - ./data:/app/data
+
+  stt:
+    build: ./stt
+    container_name: lappland-stt
+    restart: unless-stopped
