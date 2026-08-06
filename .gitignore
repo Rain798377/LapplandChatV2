@@ -4,3 +4,4 @@ backups/
 data/memory.json
 todo
 .venv/
+CLAUDE.md
