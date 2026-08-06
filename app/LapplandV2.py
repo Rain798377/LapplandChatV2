@@ -10,7 +10,7 @@ from core.ai import (groq_client, histories, get_ai_response, add_to_history, ma
 from core.imagegen import generate_image
 from core.checksum import checksum
 from core.colors import *
-from commands import random_cmds, memory_cmds, misc_cmds, spotify_cmds, downloader_cmds
+from commands import random_cmds, memory_cmds, misc_cmds, spotify_cmds, downloader_cmds, call_cmds
 
 #checksum()
 
@@ -26,6 +26,7 @@ random_cmds.setup(tree)
 memory_cmds.setup(tree)
 misc_cmds.setup(tree, bot)
 spotify_cmds.setup(tree, bot)
+call_cmds.setup(tree, bot)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def is_greeting(text: str) -> bool:

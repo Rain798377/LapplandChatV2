@@ -6,6 +6,11 @@ aiohttp
 pillow
 mutagen
 discord.py[voice]
+# PyPI release predates Discord retiring the old voice encryption modes (fixed on
+# GitHub main but never republished) — install straight from source instead.
+# Pinned: services/voice_call/dave_patch.py patches this package's internals, so
+# an unpinned main could silently break the patch.
+discord-ext-voice-recv @ git+https://github.com/imayhaveborkedit/discord-ext-voice-recv.git@ac04ea7b0941112e83767cf1c1469b408fa06748
 huggingface_hub
 httpx
 fonttools

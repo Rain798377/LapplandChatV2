@@ -14,6 +14,19 @@ A Discord AI chatbot persona powered by [Groq](https://groq.com/) and `llama-3.3
 | **Selective replies** | Responds to mentions, replies, and greetings — otherwise chimes in at a random ~80–90% chance |
 | **Conversation history** | Rolling 30-message context window per channel |
 | **Slash commands** | `/download`, `/random`, `/memory`, `/ship`, `/8ball`, `/quote`, and more |
+| **Voice calls** | `/call` joins your voice channel and has a live spoken conversation — local STT, Groq for the reply, remote TTS to speak it |
+
+---
+
+## Voice calls
+
+`/call` joins your voice channel, transcribes speech locally via a `whisper.cpp` sidecar, sends the transcript through the same Groq pipeline used for text chat (so it shares mood/memory/history with that channel), then speaks the reply back through a remote TTS server. `/endcall` leaves.
+
+Only one utterance is processed at a time — new speech while Lappland is thinking or talking is dropped, not queued.
+
+**Local STT sidecar**: `docker-compose up -d` builds and runs it alongside the bot (see `stt/Dockerfile`) — CPU-only `whisper.cpp` (`base.en`, quantized), loaded once at startup. Point `STT_SERVER_URL` at it if running it separately from Compose.
+
+**Remote TTS**: set `TTS_SERVER_URL` and `TTS_SERVER_TOKEN` in `.env`. Requests are serialized (one at a time) since the TTS server is CPU-limited.
 
 ---
 
@@ -108,17 +121,21 @@ LapplandChatV2/
 │   │   ├── random_cmds.py       # /random — number, coin, die, choice, word
 │   │   ├── memory_cmds.py       # /memory — view, edit, wipe
 │   │   ├── misc_cmds.py         # /ship, /mood, /8ball, /quote
-│   │   └── spotify_cmds.py      # /play, /skip, /queue, and other music commands
+│   │   ├── spotify_cmds.py      # /play, /skip, /queue, and other music commands
+│   │   └── call_cmds.py         # /call, /endcall — live voice conversation
 │   ├── services/                # Support logic, not directly wired to commands
 │   │   ├── downloader/
 │   │   │   └── video_fix.py     # Detects and repairs broken downloaded media
-│   │   └── spotify/              # Spotify resolution, playback, audio search/download
+│   │   ├── spotify/              # Spotify resolution, playback, audio search/download
+│   │   └── voice_call/           # Voice capture (sink), downsample, STT/TTS clients, pipeline
 │   ├── assets/
 │   │   └── fonts/                # Fonts used to render /quote images
 │   └── tools/
 │       └── video_tools/          # Standalone scripts, not imported by the bot
 │           └── mp4_frame_inflate.py   # Reproduces a container sample-count inflation trick,
 │                                       # used as a test case for services/downloader/video_fix.py
+├── stt/
+│   └── Dockerfile                 # Builds the local whisper.cpp STT sidecar
 ├── backups/                      # Old file versions kept locally (gitignored)
 └── data/                         # Runtime data (memory.json, etc.)
 ```
