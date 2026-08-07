@@ -31,8 +31,10 @@ FILE_EXPIRY_SECONDS   = 43200
 
 # Bot config
 BOT_NAME              = "Lappland"
+BOT_OWNER_ID          = 955604666689921086
 REPLY_TO_ALL          = True
-ALLOWED_CHANNELS      = [1483716134250217572]
+ALLOWED_CHANNELS      = [1483716134250217572]  # seed default; managed at runtime via /listen-here, persisted in ALLOWED_CHANNELS_FILE
+ALLOWED_CHANNELS_FILE = "data/allowed_channels.json"
 MIN_CHARS             = 5
 REPLY_CHANCE          = random.uniform(0.8, 0.9)
 

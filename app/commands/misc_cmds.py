@@ -11,18 +11,8 @@ from datetime import datetime
 from fontTools.ttLib import TTFont
 from discord import app_commands
 from PIL import Image, ImageDraw, ImageFont
-
-OWNER_ID = 955604666689921086
-
-
-def is_admin(interaction: discord.Interaction) -> bool:
-    # Owner can always use admin commands (including in DMs)
-    if interaction.user.id == OWNER_ID:
-        return True
-    # In DMs, no guild = no admin check possible
-    if interaction.guild is None:
-        return False
-    return interaction.user.guild_permissions.administrator
+from core.config import BOT_OWNER_ID
+from core.permissions import is_admin
 
 
 def setup(tree: app_commands.CommandTree, bot: discord.Client):
@@ -122,7 +112,7 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
     @app_commands.allowed_installs(guilds=True, users=True)
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def terminal(interaction: discord.Interaction, command: str):
-        if interaction.user.id != OWNER_ID:
+        if interaction.user.id != BOT_OWNER_ID:
             await interaction.response.send_message("You're not the owner.", ephemeral=True)
             return
         await interaction.response.defer()

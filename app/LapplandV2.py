@@ -4,13 +4,14 @@ import os
 from discord import app_commands
 
 from core import ai
-from core.config import (DISCORD_TOKEN, ALLOWED_CHANNELS, MIN_CHARS, REPLY_TO_ALL, REPLY_CHANCE, GREETINGS)
+from core.config import (DISCORD_TOKEN, MIN_CHARS, REPLY_TO_ALL, REPLY_CHANCE, GREETINGS)
+from core.channels import allowed_channels
 from core.memory import load_memory, update_memory_from_conversation
 from core.ai import (histories, get_ai_response, add_to_history, maybe_shift_mood)
 from core.imagegen import generate_image
 from core.checksum import checksum
 from core.colors import *
-from commands import random_cmds, memory_cmds, misc_cmds, spotify_cmds, downloader_cmds, call_cmds
+from commands import random_cmds, memory_cmds, misc_cmds, spotify_cmds, downloader_cmds, call_cmds, channel_cmds
 
 #checksum()
 
@@ -27,6 +28,7 @@ memory_cmds.setup(tree)
 misc_cmds.setup(tree, bot)
 spotify_cmds.setup(tree, bot)
 call_cmds.setup(tree, bot)
+channel_cmds.setup(tree)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def is_greeting(text: str) -> bool:
@@ -84,7 +86,7 @@ async def on_ready():
 async def on_message(message: discord.Message):
     if message.author == bot.user:
         return
-    if ALLOWED_CHANNELS and message.channel.id not in ALLOWED_CHANNELS:
+    if allowed_channels and message.channel.id not in allowed_channels:
         return
 
     content = message.content
