@@ -2,11 +2,9 @@ import re
 import base64
 import random
 import httpx
-from groq import Groq
-from core.config import GROQ_API_KEY, SYSTEM_PROMPT, MOODS, MAX_HISTORY, MODEL
+from core.config import SYSTEM_PROMPT, MOODS, MAX_HISTORY, MODEL
+from core.llm import chat_completion
 from core.memory import get_user_memory_string
-
-groq_client = Groq(api_key=GROQ_API_KEY)
 
 histories: dict = {}
 
@@ -75,13 +73,12 @@ def get_ai_response(
             {"role": "user", "content": content_blocks},
         ]
 
-        response = groq_client.chat.completions.create(
-            model=VISION_MODEL,
+        reply = chat_completion(
             messages=vision_messages,
+            model=VISION_MODEL,
             max_tokens=400,
             temperature=0.9,
         )
-        reply = response.choices[0].message.content.strip()
         reply = re.sub(r'^[^:]{1,50}:\s*', '', reply).strip()
 
         # Add to history as plain text so future turns stay compatible
@@ -96,14 +93,12 @@ def get_ai_response(
     if len(histories[channel_id]) > MAX_HISTORY:
         histories[channel_id] = histories[channel_id][-MAX_HISTORY:]
 
-    response = groq_client.chat.completions.create(
-        model=MODEL,
+    reply = chat_completion(
         messages=[{"role": "system", "content": filled_prompt}] + histories[channel_id],
+        model=MODEL,
         max_tokens=300,
         temperature=0.9,
     )
-
-    reply = response.choices[0].message.content.strip()
     reply = re.sub(r'^[^:]{1,50}:\s*', '', reply).strip()
     histories[channel_id].append({"role": "assistant", "content": reply})
     return reply

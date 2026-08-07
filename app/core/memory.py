@@ -2,6 +2,7 @@ import os
 import json
 from core.colors import *
 from core.config import MEMORY_FILE
+from core.llm import chat_completion
 
 
 def load_memory() -> dict:
@@ -23,7 +24,7 @@ def get_user_memory_string(memory: dict) -> str:
     return "\n".join([f"- {data['display_name']}: {data['notes']}" for data in memory.values()])
 
 
-def update_memory_from_conversation(channel_id: int, user_id: str, display_name: str, memory: dict, histories: dict, groq_client):
+def update_memory_from_conversation(channel_id: int, user_id: str, display_name: str, memory: dict, histories: dict):
     history_snapshot = histories.get(channel_id, [])[-6:]
 
     if user_id not in memory and display_name in memory:  # migrate old memory
@@ -43,13 +44,11 @@ Recent messages:
 Reply with ONLY an updated summary merging old and new info about {display_name}. Keep all existing notes unless they are contradicted. Add any new details. Be concise but don't drop information. Never include system commentary."""
 
     try:
-        response = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+        updated_notes = chat_completion(
             messages=[{"role": "user", "content": extraction_prompt}],
             max_tokens=500,
             temperature=0.3,
         )
-        updated_notes = response.choices[0].message.content.strip()
         if updated_notes:
             memory[user_id] = {"display_name": display_name, "notes": updated_notes}
             save_memory(memory)
