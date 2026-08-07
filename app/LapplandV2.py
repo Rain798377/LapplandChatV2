@@ -6,7 +6,7 @@ from discord import app_commands
 from core import ai
 from core.config import (DISCORD_TOKEN, ALLOWED_CHANNELS, MIN_CHARS, REPLY_TO_ALL, REPLY_CHANCE, GREETINGS)
 from core.memory import load_memory, update_memory_from_conversation
-from core.ai import (groq_client, histories, get_ai_response, add_to_history, maybe_shift_mood)
+from core.ai import (histories, get_ai_response, add_to_history, maybe_shift_mood)
 from core.imagegen import generate_image
 from core.checksum import checksum
 from core.colors import *
@@ -119,7 +119,7 @@ async def on_message(message: discord.Message):
             if len(content.split()) > 5 and random.random() < 0.75:
                 update_memory_from_conversation(
                     message.channel.id, str(message.author.id),
-                    message.author.display_name, memory, histories, groq_client
+                    message.author.display_name, memory, histories
                 )
             return
 
@@ -135,7 +135,7 @@ async def on_message(message: discord.Message):
             if len(content.split()) > 5 and random.random() < 0.75:
                 update_memory_from_conversation(
                     message.channel.id, str(message.author.id),
-                    message.author.display_name, memory, histories, groq_client
+                    message.author.display_name, memory, histories
                 )
             await message.reply(reply, mention_author=False)
         except Exception as e:

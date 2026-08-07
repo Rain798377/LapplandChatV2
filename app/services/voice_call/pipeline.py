@@ -64,7 +64,7 @@ async def handle_utterance(guild_id: int, member: discord.Member, pcm_48k_stereo
         print(f"[voice_call] reply: {reply}", flush=True)
         if len(transcript.split()) > 5:
             update_memory_from_conversation(
-                channel_id, str(member.id), member.display_name, memory, ai.histories, ai.groq_client
+                channel_id, str(member.id), member.display_name, memory, ai.histories
             )
 
         wav_bytes = await tts.synthesize(reply)

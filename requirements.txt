@@ -1,5 +1,6 @@
 discord.py
 groq
+google-genai
 yt-dlp
 requests
 aiohttp
