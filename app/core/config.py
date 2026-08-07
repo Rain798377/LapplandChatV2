@@ -10,7 +10,8 @@ GREETINGS             = {"hello", "hi", "hey", "sup", "yo", "hiya", "heya", "how
 DISCORD_TOKEN         = os.environ.get("DISCORD_TOKEN")
 GROQ_API_KEY          = os.environ.get("GROQ_API_KEY")
 GEMINI_API_KEY        = os.environ.get("GEMINI_API_KEY")
-HF_TOKEN              = os.environ.get("HF_TOKEN")
+CLOUDFLARE_ACCOUNT_ID = os.environ.get("CLOUDFLARE_ACCOUNT_ID")
+CLOUDFLARE_API_TOKEN  = os.environ.get("CLOUDFLARE_API_TOKEN")
 SPOTIFY_CLIENT_ID     = os.environ.get("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET")
 
