@@ -84,7 +84,7 @@ async def on_ready():
 
 @bot.event
 async def on_message(message: discord.Message):
-    if message.author == bot.user:
+    if message.author.bot:
         return
     if allowed_channels and message.channel.id not in allowed_channels:
         return
