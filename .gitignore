@@ -2,6 +2,7 @@
 __pycache__/
 backups/
 data/memory.json
+data/allowed_channels.json
 todo
 .venv/
 CLAUDE.md
