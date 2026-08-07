@@ -1,18 +1,14 @@
 import io
 import random
 import asyncio
-import os
-import urllib.request
 import aiohttp
 import discord
-import tempfile
 from core import ai
 from datetime import datetime
-from fontTools.ttLib import TTFont
 from discord import app_commands
-from PIL import Image, ImageDraw, ImageFont
 from core.config import BOT_OWNER_ID
 from core.permissions import is_admin
+from core.quote_image import render_quote
 
 
 def setup(tree: app_commands.CommandTree, bot: discord.Client):
@@ -137,7 +133,6 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
     @app_commands.allowed_installs(guilds=True, users=True)
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def get_time(interaction: discord.Interaction):
-        from datetime import datetime
         await interaction.response.send_message(f"Current server time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     @tree.command(name="8ball", description="Ask the magic 8-ball a yes/no question")
@@ -163,209 +158,13 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
 
         recorded_at = datetime.now().strftime("%B %d, %Y at %I:%M %p")
 
-        BASE_DIR       = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        FONTS_DIR      = os.path.join(BASE_DIR, "assets", "fonts")
-        font_reg_path  = os.path.join(FONTS_DIR, "DejaVuSans.ttf")
-        font_bold_path = os.path.join(FONTS_DIR, "DejaVuSans-Bold.ttf")
-        noto_cjk_path  = os.path.join(FONTS_DIR, "NotoSansCJK-Regular.ttc")
-
-        AV = 350
-        W  = AV + 500
-        H  = AV
-
-        PAD_Y     = 40
-        TEXT_X    = AV + 40
-        ACCENT_X  = TEXT_X - 16
-        max_width = W - TEXT_X - 30
-
-        def is_cjk_char(cp):
-            return (
-                0x1100  <= cp <= 0x11FF  or
-                0x2E80  <= cp <= 0x2EFF  or
-                0x2F00  <= cp <= 0x2FDF  or
-                0x3000  <= cp <= 0x9FFF  or
-                0xA000  <= cp <= 0xA4CF  or
-                0xAC00  <= cp <= 0xD7AF  or
-                0xF900  <= cp <= 0xFAFF  or
-                0xFE10  <= cp <= 0xFE1F  or
-                0xFE30  <= cp <= 0xFE4F  or
-                0xFF00  <= cp <= 0xFFEF  or
-                0x20000 <= cp <= 0x2FA1F
-            )
-
-        def build_cmap(path, index=0):
-            try:
-                tt = TTFont(path, fontNumber=index)
-                cmap = tt.getBestCmap()
-                if not cmap:
-                    return set()
-                glyph_order = tt.getGlyphOrder()
-                notdef = glyph_order[0] if glyph_order else '.notdef'
-                return set(cp for cp, name in cmap.items() if name != notdef)
-            except Exception as e:
-                print(f"[quote] build_cmap failed for {path} index={index}: {e}")
-                return set()
-
-        def make_fonts(size_quote, size_name, size_handle):
-            fq  = ImageFont.truetype(font_reg_path,  size_quote)
-            fn  = ImageFont.truetype(font_bold_path, size_name)
-            fh  = ImageFont.truetype(font_reg_path,  size_handle)
-            fc  = ImageFont.truetype(noto_cjk_path,  size_quote,  index=0)
-            fcn = ImageFont.truetype(noto_cjk_path,  size_name,   index=0)
-            fch = ImageFont.truetype(noto_cjk_path,  size_handle, index=0)
-            return fq, fn, fh, fc, fcn, fch
-
-        def build_fallback_list(font_quote, font_cjk, size_quote):
-            fl = [(font_quote, build_cmap(font_reg_path))]
-            for fname in ["DejaVuSerif.ttf", "DejaVuSansMono.ttf"]:
-                p = os.path.join(FONTS_DIR, fname)
-                if os.path.exists(p):
-                    fl.append((ImageFont.truetype(p, size_quote), build_cmap(p)))
-            fl.append((font_cjk, build_cmap(noto_cjk_path, index=0)))
-            return fl
-
-        def best_font_for(ch, font_quote, font_cjk, fallback_list):
-            cp = ord(ch)
-            if is_cjk_char(cp):
-                return font_cjk
-            for pil_font, cmap_set in fallback_list[:-1]:
-                if cp in cmap_set:
-                    return pil_font
-            return font_cjk
-
-        def line_width(text, font_quote, font_cjk, fallback_list):
-            w = 0
-            for ch in text:
-                f = best_font_for(ch, font_quote, font_cjk, fallback_list)
-                bbox = f.getbbox(ch)
-                w += bbox[2] - bbox[0]
-            return w
-
-        def wrap_text(text, font_quote, font_cjk, fallback_list, max_w, max_lines=4):
-            words = text.split()
-            lines, cur = [], ""
-            for word in words:
-                test = (cur + " " + word).strip()
-                if line_width(test, font_quote, font_cjk, fallback_list) <= max_w:
-                    cur = test
-                else:
-                    if cur:
-                        lines.append(cur)
-                    cur = word
-                    if len(lines) == max_lines:
-                        break
-            if cur and len(lines) < max_lines:
-                lines.append(cur)
-            if len(lines) == max_lines and line_width(lines[-1], font_quote, font_cjk, fallback_list) > max_w:
-                while line_width(lines[-1] + "…", font_quote, font_cjk, fallback_list) > max_w:
-                    lines[-1] = lines[-1][:-1]
-                lines[-1] += "…"
-            return lines
-
-        def get_baseline_offset(font_a, font_b):
-            return font_a.getbbox("A")[1] - font_b.getbbox("A")[1]
-
-        # ── Dynamic font sizing ───────────────────────────────────────────────
-        size_quote  = 36
-        size_name   = 22
-        size_handle = 17
-        MIN_SIZE    = 18
-
-        while size_quote >= MIN_SIZE:
-            font_quote, font_name, font_handle, font_cjk, font_cjk_name, font_cjk_handle = make_fonts(size_quote, size_name, size_handle)
-            fallback_list = build_fallback_list(font_quote, font_cjk, size_quote)
-            wrapped_lines = wrap_text(message, font_quote, font_cjk, fallback_list, max_width)
-            if all(line_width(l, font_quote, font_cjk, fallback_list) <= max_width for l in wrapped_lines):
-                break
-            size_quote  -= 2
-            size_name   = max(12, size_name  - 1)
-            size_handle = max(10, size_handle - 1)
-
-        # ── Fetch avatar if user provided ──────────────────────────────────────
         avatar_data = None
         if user:
             async with aiohttp.ClientSession() as session:
                 async with session.get(user.display_avatar.with_size(512).url) as resp:
                     avatar_data = await resp.read()
 
-        # ── Canvas ────────────────────────────────────────────────────────────
-        img  = Image.new("RGB", (W, H), (10, 10, 15))
-        draw = ImageDraw.Draw(img)
-
-        if avatar_data:
-            avatar = Image.open(io.BytesIO(avatar_data)).convert("RGBA").resize((AV, AV))
-            fade = Image.new("L", (AV, AV), 0)
-            fd = ImageDraw.Draw(fade)
-            for x in range(AV):
-                t = x / AV
-                alpha = int(255 * max(0.0, 1.0 - t ** 1.4))
-                fd.line([(x, 0), (x, AV - 1)], fill=alpha)
-            avatar.putalpha(fade)
-            img.paste(avatar, (0, 0), avatar)
-
-        draw.rectangle([ACCENT_X, PAD_Y, ACCENT_X + 3, H - PAD_Y],
-                       fill=(255, 255, 255))
-
-        # ── Vertically center text block ──────────────────────────────────────
-        line_h   = font_quote.getbbox("Ag")[3] + 10
-        name_h   = font_name.getbbox("Ag")[3] + 4
-        recorded_h = font_handle.getbbox("Ag")[3] + 6
-        handle_h = font_handle.getbbox("Ag")[3]
-        gap      = 14
-        block_h  = line_h * len(wrapped_lines) + gap + name_h + handle_h + recorded_h
-        text_y   = (H - block_h) // 2
-
-        cjk_offset_quote  = get_baseline_offset(font_quote,  font_cjk)
-        cjk_offset_name   = get_baseline_offset(font_name,   font_cjk_name)
-        cjk_offset_handle = get_baseline_offset(font_handle, font_cjk_handle)
-
-        # ── Draw functions ────────────────────────────────────────────────────
-        def draw_mixed_line(draw, x, y, text, fill):
-            cx = x
-            for ch in text:
-                f = best_font_for(ch, font_quote, font_cjk, fallback_list)
-                offset = cjk_offset_quote if f is font_cjk else 0
-                draw.text((cx, y + offset), ch, font=f, fill=fill)
-                bbox = f.getbbox(ch)
-                cx += bbox[2] - bbox[0]
-
-        def draw_mixed_line_sized(draw, x, y, text, fill, font_default, cjk_font, cjk_offset):
-            cx = x
-            for ch in text:
-                cp = ord(ch)
-                if is_cjk_char(cp):
-                    chosen = cjk_font
-                    offset = cjk_offset
-                else:
-                    chosen = font_default
-                    offset = 0
-                    for pil_font, cmap_set in fallback_list[:-1]:
-                        if cp in cmap_set:
-                            break
-                    else:
-                        chosen = cjk_font
-                        offset = cjk_offset
-                draw.text((cx, y + offset), ch, font=chosen, fill=fill)
-                bbox = chosen.getbbox(ch)
-                cx += bbox[2] - bbox[0]
-
-        for i, line in enumerate(wrapped_lines):
-            draw_mixed_line(draw, TEXT_X, text_y + i * line_h, line, (255, 255, 255))
-
-        author_y = text_y + line_h * len(wrapped_lines) + gap
-        draw_mixed_line_sized(draw, TEXT_X, author_y,
-                              f"— {user.display_name}",
-                              (210, 210, 215), font_name, font_cjk_name, cjk_offset_name)
-        draw_mixed_line_sized(draw, TEXT_X, author_y + name_h,
-                              f"@{user.name}",
-                              (130, 130, 140), font_handle, font_cjk_handle, cjk_offset_handle)
-        draw_mixed_line_sized(draw, TEXT_X, author_y + name_h + handle_h + 4,
-                              recorded_at,
-                              (90, 90, 100), font_handle, font_cjk_handle, cjk_offset_handle)
-        # ── Send ──────────────────────────────────────────────────────────────
-        buffer = io.BytesIO()
-        img.save(buffer, format="PNG")
-        buffer.seek(0)
+        buffer = render_quote(message, user.display_name, user.name, recorded_at, avatar_data)
         await interaction.followup.send(file=discord.File(buffer, filename="quote.png"))
 
     @tree.context_menu(name="Make Quote")
@@ -375,209 +174,11 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
         await interaction.response.defer()
 
         recorded_at = message.created_at.strftime("%B %d, %Y at %I:%M %p")
-
-        BASE_DIR       = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        FONTS_DIR      = os.path.join(BASE_DIR, "assets", "fonts")
-        font_reg_path  = os.path.join(FONTS_DIR, "DejaVuSans.ttf")
-        font_bold_path = os.path.join(FONTS_DIR, "DejaVuSans-Bold.ttf")
-        noto_cjk_path  = os.path.join(FONTS_DIR, "NotoSansCJK-Regular.ttc")
-
-        AV = 350
-        W  = AV + 500
-        H  = AV
-
-        PAD_Y     = 40
-        TEXT_X    = AV + 40
-        ACCENT_X  = TEXT_X - 16
-        max_width = W - TEXT_X - 30
-
-        def is_cjk_char(cp):
-            return (
-                0x1100  <= cp <= 0x11FF  or
-                0x2E80  <= cp <= 0x2EFF  or
-                0x2F00  <= cp <= 0x2FDF  or
-                0x3000  <= cp <= 0x9FFF  or
-                0xA000  <= cp <= 0xA4CF  or
-                0xAC00  <= cp <= 0xD7AF  or
-                0xF900  <= cp <= 0xFAFF  or
-                0xFE10  <= cp <= 0xFE1F  or
-                0xFE30  <= cp <= 0xFE4F  or
-                0xFF00  <= cp <= 0xFFEF  or
-                0x20000 <= cp <= 0x2FA1F
-            )
-
-        def build_cmap(path, index=0):
-            try:
-                tt = TTFont(path, fontNumber=index)
-                cmap = tt.getBestCmap()
-                if not cmap:
-                    return set()
-                glyph_order = tt.getGlyphOrder()
-                notdef = glyph_order[0] if glyph_order else '.notdef'
-                return set(cp for cp, name in cmap.items() if name != notdef)
-            except Exception as e:
-                print(f"[quote] build_cmap failed for {path} index={index}: {e}")
-                return set()
-
-        def make_fonts(size_quote, size_name, size_handle):
-            fq  = ImageFont.truetype(font_reg_path,  size_quote)
-            fn  = ImageFont.truetype(font_bold_path, size_name)
-            fh  = ImageFont.truetype(font_reg_path,  size_handle)
-            fc  = ImageFont.truetype(noto_cjk_path,  size_quote,  index=0)
-            fcn = ImageFont.truetype(noto_cjk_path,  size_name,   index=0)
-            fch = ImageFont.truetype(noto_cjk_path,  size_handle, index=0)
-            return fq, fn, fh, fc, fcn, fch
-
-        def build_fallback_list(font_quote, font_cjk, size_quote):
-            fl = [(font_quote, build_cmap(font_reg_path))]
-            for fname in ["DejaVuSerif.ttf", "DejaVuSansMono.ttf"]:
-                p = os.path.join(FONTS_DIR, fname)
-                if os.path.exists(p):
-                    fl.append((ImageFont.truetype(p, size_quote), build_cmap(p)))
-            fl.append((font_cjk, build_cmap(noto_cjk_path, index=0)))
-            return fl
-
-        def best_font_for(ch, font_quote, font_cjk, fallback_list):
-            cp = ord(ch)
-            if is_cjk_char(cp):
-                return font_cjk
-            for pil_font, cmap_set in fallback_list[:-1]:
-                if cp in cmap_set:
-                    return pil_font
-            return font_cjk
-
-        def line_width(text, font_quote, font_cjk, fallback_list):
-            w = 0
-            for ch in text:
-                f = best_font_for(ch, font_quote, font_cjk, fallback_list)
-                bbox = f.getbbox(ch)
-                w += bbox[2] - bbox[0]
-            return w
-
-        def wrap_text(text, font_quote, font_cjk, fallback_list, max_w, max_lines=4):
-            words = text.split()
-            lines, cur = [], ""
-            for word in words:
-                test = (cur + " " + word).strip()
-                if line_width(test, font_quote, font_cjk, fallback_list) <= max_w:
-                    cur = test
-                else:
-                    if cur:
-                        lines.append(cur)
-                    cur = word
-                    if len(lines) == max_lines:
-                        break
-            if cur and len(lines) < max_lines:
-                lines.append(cur)
-            if len(lines) == max_lines and line_width(lines[-1], font_quote, font_cjk, fallback_list) > max_w:
-                while line_width(lines[-1] + "…", font_quote, font_cjk, fallback_list) > max_w:
-                    lines[-1] = lines[-1][:-1]
-                lines[-1] += "…"
-            return lines
-
-        def get_baseline_offset(font_a, font_b):
-            return font_a.getbbox("A")[1] - font_b.getbbox("A")[1]
-
-        # ── Dynamic font sizing ───────────────────────────────────────────────
-        # Start at max size, shrink until text fits in 4 lines or size floor hit
         quote_text = message.content or "[no text content]"
-        size_quote = 36
-        size_name  = 22
-        size_handle= 17
-        MIN_SIZE   = 18
 
-        while size_quote >= MIN_SIZE:
-            font_quote, font_name, font_handle, font_cjk, font_cjk_name, font_cjk_handle = make_fonts(size_quote, size_name, size_handle)
-            fallback_list = build_fallback_list(font_quote, font_cjk, size_quote)
-            wrapped_lines = wrap_text(quote_text, font_quote, font_cjk, fallback_list, max_width)
-            # check if longest line fits and we have 4 or fewer lines
-            if all(line_width(l, font_quote, font_cjk, fallback_list) <= max_width for l in wrapped_lines):
-                break
-            size_quote  -= 2
-            size_name   = max(12, size_name  - 1)
-            size_handle = max(10, size_handle - 1)
-
-        # ── Fetch avatar ───────────────────────────────────────────────────────
         async with aiohttp.ClientSession() as session:
             async with session.get(message.author.display_avatar.with_size(512).url) as resp:
                 avatar_data = await resp.read()
 
-        # ── Canvas ────────────────────────────────────────────────────────────
-        img  = Image.new("RGB", (W, H), (10, 10, 15))
-        draw = ImageDraw.Draw(img)
-
-        avatar = Image.open(io.BytesIO(avatar_data)).convert("RGBA").resize((AV, AV))
-        fade = Image.new("L", (AV, AV), 0)
-        fd = ImageDraw.Draw(fade)
-        for x in range(AV):
-            t = x / AV
-            alpha = int(255 * max(0.0, 1.0 - t ** 1.4))
-            fd.line([(x, 0), (x, AV - 1)], fill=alpha)
-        avatar.putalpha(fade)
-        img.paste(avatar, (0, 0), avatar)
-
-        draw.rectangle([ACCENT_X, PAD_Y, ACCENT_X + 3, H - PAD_Y],
-                       fill=(255, 255, 255))
-
-        # ── Vertically center text block ──────────────────────────────────────
-        line_h   = font_quote.getbbox("Ag")[3] + 10
-        name_h   = font_name.getbbox("Ag")[3] + 4
-        recorded_h = font_handle.getbbox("Ag")[3] + 6
-        handle_h = font_handle.getbbox("Ag")[3]
-        gap      = 14
-        block_h  = line_h * len(wrapped_lines) + gap + name_h + handle_h + recorded_h
-        text_y   = (H - block_h) // 2
-
-        cjk_offset_quote  = get_baseline_offset(font_quote,  font_cjk)
-        cjk_offset_name   = get_baseline_offset(font_name,   font_cjk_name)
-        cjk_offset_handle = get_baseline_offset(font_handle, font_cjk_handle)
-
-        # ── Draw functions ────────────────────────────────────────────────────
-        def draw_mixed_line(draw, x, y, text, fill):
-            cx = x
-            for ch in text:
-                f = best_font_for(ch, font_quote, font_cjk, fallback_list)
-                offset = cjk_offset_quote if f is font_cjk else 0
-                draw.text((cx, y + offset), ch, font=f, fill=fill)
-                bbox = f.getbbox(ch)
-                cx += bbox[2] - bbox[0]
-
-        def draw_mixed_line_sized(draw, x, y, text, fill, font_default, cjk_font, cjk_offset):
-            cx = x
-            for ch in text:
-                cp = ord(ch)
-                if is_cjk_char(cp):
-                    chosen = cjk_font
-                    offset = cjk_offset
-                else:
-                    chosen = font_default
-                    offset = 0
-                    for pil_font, cmap_set in fallback_list[:-1]:
-                        if cp in cmap_set:
-                            break
-                    else:
-                        chosen = cjk_font
-                        offset = cjk_offset
-                draw.text((cx, y + offset), ch, font=chosen, fill=fill)
-                bbox = chosen.getbbox(ch)
-                cx += bbox[2] - bbox[0]
-
-        for i, line in enumerate(wrapped_lines):
-            draw_mixed_line(draw, TEXT_X, text_y + i * line_h, line, (255, 255, 255))
-
-        author_y = text_y + line_h * len(wrapped_lines) + gap
-        draw_mixed_line_sized(draw, TEXT_X, author_y,
-                              f"— {message.author.display_name}",
-                              (210, 210, 215), font_name, font_cjk_name, cjk_offset_name)
-        draw_mixed_line_sized(draw, TEXT_X, author_y + name_h,
-                              f"@{message.author.name}",
-                              (130, 130, 140), font_handle, font_cjk_handle, cjk_offset_handle)
-        draw_mixed_line_sized(draw, TEXT_X, author_y + name_h + handle_h + 4,
-                              recorded_at,
-                              (90, 90, 100), font_handle, font_cjk_handle, cjk_offset_handle)
-
-        # ── Send ──────────────────────────────────────────────────────────────
-        buffer = io.BytesIO()
-        img.save(buffer, format="PNG")
-        buffer.seek(0)
+        buffer = render_quote(quote_text, message.author.display_name, message.author.name, recorded_at, avatar_data)
         await interaction.followup.send(file=discord.File(buffer, filename="quote.png"))

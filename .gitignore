@@ -6,3 +6,4 @@ data/allowed_channels.json
 todo
 .venv/
 CLAUDE.md
+.claude/
