@@ -62,7 +62,7 @@ async def imagine_cmd(interaction: discord.Interaction, prompt: str):
             pass
     else:
         await interaction.followup.send(
-            "couldn't generate that image, sorry. check that HF_TOKEN is set.",
+            "couldn't generate that image, sorry. check that CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN are set.",
             ephemeral=True,
         )
 

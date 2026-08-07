@@ -1,36 +1,20 @@
 """
-imagegen.py — image generation via Hugging Face Inference Providers
+imagegen.py — image generation via Cloudflare Workers AI
 
-Install: pip install huggingface_hub pillow
-Env var:  HF_TOKEN  (huggingface.co/settings/tokens — needs "Make calls to Inference Providers" permission)
-
-Provider options (set IMAGEGEN_PROVIDER):
-  "fal-ai"    — FLUX.1-schnell, fast, good free tier
-  "replicate" — alternative if fal-ai quota runs out
-  "together"  — another solid option
-
-Model options (set IMAGEGEN_MODEL):
-  black-forest-labs/FLUX.1-schnell  — fast, free tier friendly
-  black-forest-labs/FLUX.1-dev      — higher quality, slower
-  ByteDance/SDXL-Lightning          — fast SDXL alternative
+Env vars: CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN
+          (dash.cloudflare.com — the token needs the "Workers AI" > Edit permission)
+Model:    @cf/black-forest-labs/flux-1-schnell
 """
 
 import os
+import base64
 import hashlib
 import time
-from huggingface_hub import InferenceClient
+import httpx
+from core.config import CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN
 from core.colors import *
 
-HF_TOKEN = None
-try:
-    from core.config import HF_TOKEN
-except ImportError:
-    pass
-
-HF_TOKEN = HF_TOKEN or os.environ.get("HF_TOKEN")
-
-IMAGEGEN_PROVIDER = "fal-ai"
-IMAGEGEN_MODEL    = "black-forest-labs/FLUX.1-schnell"
+IMAGE_MODEL = "@cf/black-forest-labs/flux-1-schnell"
 
 
 def generate_image(prompt: str, width: int = 1024, height: int = 1024) -> str | None:
@@ -38,28 +22,34 @@ def generate_image(prompt: str, width: int = 1024, height: int = 1024) -> str | 
     Generate an image from a text prompt.
     Saves the image to data/images/ and returns the local file path, or None on failure.
     """
-    if not HF_TOKEN:
-        print(f"{RED}[imagegen] HF_TOKEN not set{RESET}", flush=True)
+    if not CLOUDFLARE_ACCOUNT_ID or not CLOUDFLARE_API_TOKEN:
+        print(f"{RED}[imagegen] CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN not set{RESET}", flush=True)
         return None
 
     try:
-        client = InferenceClient(
-            provider=IMAGEGEN_PROVIDER,
-            api_key=HF_TOKEN,
+        resp = httpx.post(
+            f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/{IMAGE_MODEL}",
+            headers={"Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}"},
+            json={"prompt": prompt},
+            timeout=60,
         )
+        resp.raise_for_status()
+        data = resp.json()
 
-        # Returns a PIL.Image object
-        image = client.text_to_image(
-            prompt,
-            model=IMAGEGEN_MODEL,
-            width=width,
-            height=height,
-        )
+        if not data.get("success"):
+            print(f"{RED}[imagegen] Cloudflare returned an error: {data.get('errors')}{RESET}", flush=True)
+            return None
+
+        image_b64 = data.get("result", {}).get("image")
+        if not image_b64:
+            print(f"{RED}[imagegen] Cloudflare response had no image{RESET}", flush=True)
+            return None
 
         os.makedirs("data/images", exist_ok=True)
         slug = hashlib.md5(prompt.encode()).hexdigest()[:8]
         filename = f"data/images/{slug}_{int(time.time())}.png"
-        image.save(filename)
+        with open(filename, "wb") as f:
+            f.write(base64.b64decode(image_b64))
 
         print(f"{LIGHT_GREEN}[imagegen] generated: {filename}{RESET}", flush=True)
         return filename
