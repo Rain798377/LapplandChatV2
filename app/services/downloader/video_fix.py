@@ -56,6 +56,46 @@ def _count_frames(filepath: str, timeout: int = 120) -> int | None:
     return None
 
 
+
+def _audio_tail_is_padding(filepath: str, video_dur_s: float,
+                           max_pad_size: int = 32) -> bool:
+    """
+    Confirm that the audio beyond `video_dur_s` is synthetic filler rather
+    than a genuine audio tail.
+
+    Bypass patchers (e.g. "Editing Easy") append thousands of null AAC
+    frames to inflate the container duration -- the framing stays valid
+    (duration=1024, cv=0.0) so every timing-based heuristic in
+    `_needs_remux` sees a perfectly healthy stream. The only thing that
+    gives it away is packet *size*: real AAC-LC frames run ~700-1000 bytes,
+    while padding frames are a fixed 8 bytes (a 4-byte length prefix
+    followed by four zero bytes).
+
+    Returns True when >90% of packets after video_dur_s are <= max_pad_size
+    bytes, which distinguishes a patched file from one that legitimately
+    carries a few seconds of audio past the last video frame.
+    """
+    try:
+        out = subprocess.check_output([
+            "ffprobe", "-v", "error", "-select_streams", "a:0",
+            "-show_entries", "packet=pts_time,size",
+            "-print_format", "json", filepath,
+        ], timeout=60)
+        packets = json.loads(out).get("packets", [])
+        tail = [
+            int(pk["size"]) for pk in packets
+            if pk.get("pts_time") not in (None, "N/A")
+            and float(pk["pts_time"]) > video_dur_s
+            and pk.get("size") not in (None, "N/A")
+        ]
+        if len(tail) < 10:
+            return False
+        tiny = sum(1 for sz in tail if sz <= max_pad_size)
+        return (tiny / len(tail)) > 0.90
+    except Exception:
+        return False
+
+
 def _needs_remux(filepath: str) -> tuple[bool, float, str]:
     """
     Detect whether a file has timing problems that require a remux.
@@ -210,6 +250,22 @@ def _needs_remux(filepath: str) -> tuple[bool, float, str]:
                 # CASE 5: PTS are genuinely stretched — re-encode with setpts
                 pts_mul = audio_dur_s / video_dur_s
                 return True, pts_mul, "video"
+
+
+        # -- CASE 7: Inflated container duration via padded audio tail --------
+        # Mirror image of CASE 5/6: the *audio* is the inflated side. Bypass
+        # patchers append null AAC frames so the container reports a much
+        # longer duration than the real content (used to understate average
+        # bitrate to an ingest pipeline). Framing stays valid, so cases 1-4
+        # cannot see it -- the tell is packet size, not packet timing.
+        # Fix: stream-copy trim to video_dur_s. Reuses fix_type "trim", whose
+        # handler treats pts_mul as a trim target in seconds, so no caller
+        # change is needed.
+        if audio_dur_s > 1.0 and video_dur_s > 1.0:
+            audio_excess = (audio_dur_s / video_dur_s) - 1.0
+            if audio_excess > DURATION_SKEW_TOLERANCE:
+                if _audio_tail_is_padding(filepath, video_dur_s):
+                    return True, video_dur_s, "trim"
 
         # ── Raw audio packet durations ────────────────────────────────────────
         pkt_out = subprocess.check_output([
