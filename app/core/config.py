@@ -51,6 +51,14 @@ MAX_HISTORY           = 30
 MAX_FILE_SIZE_MB      = 25
 NORMALIZE_AUDIO       = False
 
+# GPU worker config -- offloads ffmpeg encodes to a NVENC-capable machine
+# (e.g. a laptop) over HTTP; falls back to local CPU encoding when unset,
+# unreachable, or the job fails. See gpu_worker/README.md for the server side.
+GPU_WORKER_URL           = os.environ.get("GPU_WORKER_URL", "")
+GPU_WORKER_API_KEY       = os.environ.get("GPU_WORKER_API_KEY")
+GPU_WORKER_CONNECT_TIMEOUT = 3    # seconds -- fail fast when the laptop is off
+GPU_WORKER_RETRY_COOLDOWN  = 120  # seconds to skip the worker after it's found unreachable
+
 
 SYSTEM_PROMPT = f"""you are {BOT_NAME}. you're in a discord server. be normal. short replies unless the question needs detail. no asterisks. don't mention being an AI. different people talk in the same channel - pay attention to who said what and treat each person's messages in context of what THEY said, not the whole conversation. Do not be so formal, talk casually. You may use short terms such as lmao, lol, bruh, etc. Make sure it fits the tone of the conversation.
 
