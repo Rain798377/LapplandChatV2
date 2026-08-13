@@ -22,7 +22,7 @@ from core.config import (
     NORMALIZE_AUDIO,
     SPOTIFY_PLAYLIST_MAX_SONGS,
 )
-from services.downloader.video_fix import _probe, _needs_remux, _remux_fix, _fix_video_pts, _trim_to_audio, _compress_to_target, _normalize_audio, _is_corrupt
+from services.downloader.video_fix import _probe, _needs_remux, _remux_fix, _fix_video_pts, _trim_to_audio, _compress_to_target, _normalize_audio, _is_corrupt, _probe_open_gop_hevc, _fix_open_gop_hevc
 from services.spotify.audio import search_and_download_audio
 from tools.video_tools.mp4_frame_inflate import process as _inflate_process
 from core.status import AnimatedStatus
@@ -532,6 +532,19 @@ async def attempt_download(
 
             if ok:
                 src = fixed
+
+        # ── Open-GOP HEVC fix ───────────────────────────────────────────────────
+        # Plays audio-only with no video in Windows Media Foundation (Movies &
+        # TV, Photos, WMP) but fine in VLC/mpv/ffmpeg/Discord. Cheap to check
+        # even after an AV fix above: if that already re-encoded to h264, the
+        # probe's codec check short-circuits immediately.
+        open_gop, _open_gop_verdict = await loop.run_in_executor(None, lambda: _probe_open_gop_hevc(src))
+        if open_gop:
+            await _status("Detected open-GOP HEVC (Windows playback issue) — re-encoding to closed-GOP…")
+            fixed_gop = os.path.join(tmpdir, "opengop_" + base_name)
+            ok = await loop.run_in_executor(None, lambda: _fix_open_gop_hevc(src, fixed_gop))
+            if ok:
+                src = fixed_gop
 
         # ── Audio normalization ───────────────────────────────────────────────
         if normalize:

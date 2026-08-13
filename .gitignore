@@ -7,3 +7,6 @@ todo
 .venv/
 CLAUDE.md
 .claude/
+create_test_video.py
+test_suite/
+input.mp4

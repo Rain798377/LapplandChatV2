@@ -17,7 +17,13 @@ Usage:
     ./fixvid.py clip.mp4 --force              # repair even if nothing detected
     ./fixvid.py clip.mp4 --normalize          # + loudnorm to -14 LUFS
     ./fixvid.py clip.mp4 --compress 8         # + squeeze to ~8 MB
+    ./fixvid.py clip.mp4 --thorough           # scan whole file for open-GOP HEVC,
+                                               # not just the first 30s
     ./fixvid.py *.mp4                         # batch; summary at the end
+
+Every run also checks HEVC inputs for open-GOP encoding (the "plays audio
+only in Movies & TV / Photos / WMP but fine in VLC/Discord" bug) and
+re-encodes to closed-GOP when found -- see video_fix._probe_open_gop_hevc.
 
 Exit codes: 0 = ok (fixed or nothing needed), 1 = a repair failed.
 """
@@ -63,6 +69,8 @@ FIX_LABELS = {
     "audio": "broken audio timing (re-encode from PCM)",
     "video": "stretched video PTS (re-encode video, keep audio)",
 }
+
+OPEN_GOP_LABEL = "open-GOP HEVC (re-encode to closed-GOP so Windows Media Foundation can play it)"
 
 
 # ── probing ───────────────────────────────────────────────────────────────────
@@ -132,8 +140,13 @@ def process(path, args):
     else:
         print(f"  {C.green}clean{C.off}    no timing problems detected")
 
+    open_gop, open_gop_verdict = video_fix._probe_open_gop_hevc(path, thorough=args.thorough)
+    if open_gop:
+        print(f"  {C.cyan}detected{C.off} {OPEN_GOP_LABEL}")
+        print(f"  {C.dim}         {open_gop_verdict}{C.off}")
+
     extras = args.normalize or args.compress
-    if not needs and not args.force and not extras:
+    if not needs and not open_gop and not args.force and not extras:
         return True
 
     if args.dry_run:
@@ -153,6 +166,8 @@ def process(path, args):
         if needs or args.force:
             stages.append(("repair", lambda s, d: repair(
                 s, d, fix_type if needs else "audio", value if needs else 1.0)))
+        if open_gop:
+            stages.append(("open-gop fix", lambda s, d: video_fix._fix_open_gop_hevc(s, d)))
         if args.normalize:
             stages.append(("normalize", video_fix._normalize_audio))
         if args.compress:
@@ -182,6 +197,10 @@ def process(path, args):
     still, _, _ = video_fix._needs_remux(dest)
     if still:
         print(f"  {C.yellow}warning{C.off}  output is still flagged")
+    if open_gop:
+        still_open_gop, _ = video_fix._probe_open_gop_hevc(dest)
+        if still_open_gop:
+            print(f"  {C.yellow}warning{C.off}  output is still open-GOP HEVC")
     print(f"  {C.green}wrote{C.off}    {dest}")
     return True
 
@@ -200,6 +219,8 @@ def main():
                     help="also loudness-normalise to -14 LUFS")
     ap.add_argument("--compress", type=float, metavar="MB",
                     help="also compress to roughly this size in MB")
+    ap.add_argument("--thorough", action="store_true",
+                    help="scan the whole file (not just the first 30s) for open-GOP HEVC")
     args = ap.parse_args()
 
     for tool in ("ffmpeg", "ffprobe"):

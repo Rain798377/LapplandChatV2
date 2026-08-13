@@ -1,7 +1,61 @@
+"""
+video_fix.py -- video repair helpers for TikTok/downloader AV issues.
+
+A library of probe/fix helper pairs; no dispatcher of its own -- callers
+(fixvid.py, app/commands/downloader_cmds.py) own the routing from a probe's
+verdict to the matching fix function.
+
+Modes:
+  AV timestamp/duration mismatch (bypass-patched TikTok downloads)
+      probe: _needs_remux    -> (needs_fix, value, fix_type)
+      fix:   fix_type "trim"  -> _trim_to_audio
+             fix_type "video" -> _fix_video_pts
+             fix_type "audio" -> _remux_fix
+  Stream corruption
+      probe: _is_corrupt
+  Open-GOP HEVC ("audio only" on Windows Media Foundation -- Movies & TV,
+  Photos, WMP -- but plays fine in VLC/mpv/ffmpeg/Discord; see
+  _probe_open_gop_hevc's docstring for the CRA/IDR root cause)
+      probe: _probe_open_gop_hevc -> (flagged, verdict)
+      fix:   _fix_open_gop_hevc      (re-encode to closed-GOP; NVENC via the
+             GPU worker, falls back to CPU libx265 with open-gop=0)
+  Loudness normalization
+      fix only: _normalize_audio
+  Size compression
+      fix only: _compress_to_target
+"""
+
 import os
 import json
 import statistics
 import subprocess
+
+try:
+    # Optional: video_fix.py also runs standalone via fixvid.py outside the
+    # bot's package, where `core` isn't importable -- gpu_worker just isn't
+    # available there and every encode falls through to CPU as before.
+    from core.gpu_worker import remote_encode
+except ImportError:
+    remote_encode = None
+
+
+def _try_gpu_encode(args: list[str], inputs: list[str], dest: str) -> bool:
+    """
+    Attempt an encode on the laptop's GPU worker; write the result to `dest`
+    on success. Returns False on any failure so the caller falls back to its
+    local CPU ffmpeg command unchanged.
+    """
+    if remote_encode is None:
+        return False
+    try:
+        data = remote_encode(args, inputs, output_suffix=os.path.splitext(dest)[1] or ".mp4")
+        if data is None:
+            return False
+        with open(dest, "wb") as f:
+            f.write(data)
+        return True
+    except Exception:
+        return False
 
 
 def _probe(filepath: str) -> tuple[float, int]:
@@ -363,6 +417,18 @@ def _remux_fix(src: str, dest: str, pts_mul: float = 1.0) -> bool:
         if r1.returncode != 0 or not os.path.exists(wav):
             return False
 
+        if _try_gpu_encode([
+            "-i", "{input0}", "-i", "{input1}",
+            "-map", "0:v", "-map", "1:a",
+            "-vf", f"setpts={pts_mul:.10g}*PTS",
+            "-c:v", "h264_nvenc", "-preset", "p4", "-cq", "19", "-pix_fmt", "yuv420p",
+            "-video_track_timescale", "90000",
+            "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+            "-movflags", "+faststart",
+            "{output}",
+        ], [src, wav], dest):
+            return True
+
         r2 = subprocess.run([
             "ffmpeg", "-y",
             "-i", src,
@@ -399,6 +465,18 @@ def _fix_video_pts(src: str, dest: str, pts_mul: float) -> bool:
       0.5  → video was 2× too slow; squish PTS in half → plays at correct speed
       0.75 → video was 1.33× too slow; etc.
     """
+    if _try_gpu_encode([
+        "-i", "{input0}",
+        "-map", "0:v", "-map", "0:a",
+        "-vf", f"setpts={pts_mul:.10g}*PTS",
+        "-c:v", "h264_nvenc", "-preset", "p4", "-cq", "19", "-pix_fmt", "yuv420p",
+        "-video_track_timescale", "90000",
+        "-c:a", "copy",
+        "-movflags", "+faststart",
+        "{output}",
+    ], [src], dest):
+        return True
+
     try:
         result = subprocess.run([
             "ffmpeg", "-y",
@@ -414,7 +492,7 @@ def _fix_video_pts(src: str, dest: str, pts_mul: float) -> bool:
         return result.returncode == 0 and os.path.exists(dest)
     except Exception:
         return False
-    
+
 def _trim_to_audio(src: str, dest: str, audio_dur_s: float) -> bool:
     """
     Fix a file whose video container duration is inflated but whose encoded
@@ -460,6 +538,169 @@ def _is_corrupt(filepath: str) -> bool:
         return bool(stderr)
     except Exception:
         return True
+
+
+def _hevc_nal_type_counts(filepath: str, duration_cap: float | None = 30.0) -> dict[int, int] | None:
+    """
+    Run ffmpeg's trace_headers bitstream filter over the video stream and
+    tally NAL unit types (HEVC spec: 19=IDR_W_RADL, 20=IDR_N_LP, 21=CRA_NUT).
+
+    Capped to the first `duration_cap` seconds by default -- GOP structure
+    is consistent throughout an encode, so scanning the whole file is only
+    needed for a thorough/verification pass (duration_cap=None).
+
+    Returns None on any failure (missing bsf, corrupt stream, timeout).
+    """
+    cmd = ["ffmpeg", "-v", "trace"]
+    if duration_cap:
+        cmd += ["-t", str(duration_cap)]
+    cmd += ["-i", filepath, "-c", "copy", "-bsf:v", "trace_headers", "-f", "null", "-"]
+
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True,
+            timeout=60 if duration_cap else 600,
+        )
+        trace = (result.stderr.decode("utf-8", errors="replace")
+                  + result.stdout.decode("utf-8", errors="replace"))
+
+        import re as _re
+        counts: dict[int, int] = {}
+        for match in _re.finditer(r"nal_unit_type:\s*(\d+)", trace):
+            t = int(match.group(1))
+            counts[t] = counts.get(t, 0) + 1
+        return counts or None
+    except Exception:
+        return None
+
+
+def _hevc_keyframe_interval(filepath: str, default: int = 60) -> int:
+    """
+    Estimate the source's average keyframe spacing (in frames), for use as
+    the -g value on the closed-GOP re-encode -- matching the original
+    cadence keeps bitrate/quality behaviour close to the source instead of
+    hardcoding a value that may be wildly off for a given fps/GOP length.
+
+    Reads only the first 30s of frame flags (GOP spacing is consistent
+    throughout an encode). Falls back to `default` when frame data can't be
+    read or fewer than two keyframes are seen in that window.
+    """
+    try:
+        out = subprocess.check_output([
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-read_intervals", "%+30",
+            "-show_entries", "frame=key_frame",
+            "-print_format", "json",
+            filepath,
+        ], timeout=60)
+        frames = json.loads(out).get("frames", [])
+        key_positions = [i for i, f in enumerate(frames) if f.get("key_frame") == 1]
+        if len(key_positions) < 2:
+            return default
+        gaps = [b - a for a, b in zip(key_positions, key_positions[1:])]
+        return max(1, round(statistics.mean(gaps)))
+    except Exception:
+        return default
+
+
+def _probe_open_gop_hevc(filepath: str, thorough: bool = False) -> tuple[bool, str]:
+    """
+    Detect open-GOP HEVC encoding, which plays audio-only with no video in
+    Windows' default player pipeline (Media Foundation -- Movies & TV,
+    Photos, WMP) while working fine in VLC, mpv, ffmpeg-based players, and
+    Discord's Chromium player.
+
+    Root cause: encoders like x265 default to open-GOP, so most "keyframes"
+    beyond the very first are actually CRA_NUT (Clean Random Access) NAL
+    units rather than true IDR frames. CRA keyframes carry leading B-frames
+    (RASL pictures) that reference the *previous* GOP -- software decoders
+    handle this fine, but Windows Media Foundation's hardware (DXVA) HEVC
+    decode path has a long-standing history of mishandling CRA/RASL and can
+    drop or corrupt the video pipeline while the separate audio thread keeps
+    playing, producing the "audio only" symptom.
+
+    thorough=True scans the entire file's NAL trace instead of just the
+    first 30s -- slower, but useful if the fast scan is ambiguous or the
+    caller wants a full confirmation before committing to a re-encode.
+
+    Returns (flagged, verdict) -- verdict is a human-readable summary
+    suitable for logging.
+    """
+    try:
+        stream_out = subprocess.check_output([
+            "ffprobe", "-v", "quiet", "-print_format", "json",
+            "-select_streams", "v:0", "-show_streams", filepath,
+        ], timeout=30)
+        streams = json.loads(stream_out).get("streams", [])
+    except Exception:
+        return False, "probe failed -- could not read video stream"
+
+    if not streams or streams[0].get("codec_name") != "hevc":
+        return False, "not HEVC -- open-GOP CRA issue does not apply"
+
+    counts = _hevc_nal_type_counts(filepath, duration_cap=None if thorough else 30.0)
+    if counts is None:
+        return False, "trace_headers scan failed -- could not determine GOP structure"
+
+    idr_count = counts.get(19, 0) + counts.get(20, 0)
+    cra_count = counts.get(21, 0)
+
+    if cra_count == 0:
+        return False, f"closed-GOP HEVC ({idr_count} IDR keyframes, 0 CRA) -- fine on Windows Media Foundation"
+
+    return True, (
+        f"open-gop HEVC detected ({cra_count} CRA keyframes, {idr_count} IDR) -- "
+        f"likely to fail on Windows Media Foundation playback"
+    )
+
+
+def _fix_open_gop_hevc(src: str, dest: str, gop_size: int | None = None) -> bool:
+    """
+    Re-encode open-GOP HEVC to closed-GOP so Windows Media Foundation
+    (Movies & TV, Photos, WMP) can decode it -- see _probe_open_gop_hevc for
+    the CRA/IDR root cause.
+
+    `-forced-idr 1` (NVENC path) / `open-gop=0` (CPU x265 fallback) is the
+    actual fix -- it forces true IDR keyframes instead of the CRA_NUT frames
+    open-GOP mode produces by default. `-tag:v hvc1` keeps QuickTime/
+    Windows/Apple compatibility tagging (vs. the `hev1` tag some encoders
+    default to). Audio is always stream-copied -- it was never the problem.
+
+    gop_size defaults to the source's own keyframe interval (see
+    _hevc_keyframe_interval) rather than a fixed value, so re-encoded GOP
+    length stays close to the original instead of drifting for unusual
+    fps/GOP combinations.
+    """
+    if gop_size is None:
+        gop_size = _hevc_keyframe_interval(src)
+
+    if _try_gpu_encode([
+        "-i", "{input0}",
+        "-c:v", "hevc_nvenc", "-preset", "p6", "-tune", "hq",
+        "-rc", "vbr", "-cq", "18", "-b:v", "0",
+        "-forced-idr", "1", "-g", str(gop_size), "-bf", "3",
+        "-profile:v", "main", "-pix_fmt", "yuv420p",
+        "-c:a", "copy", "-tag:v", "hvc1",
+        "{output}",
+    ], [src], dest):
+        return True
+
+    try:
+        # CPU HEVC encoding is markedly slower than the H.264 CPU fallbacks
+        # elsewhere in this file, hence the longer timeout.
+        result = subprocess.run([
+            "ffmpeg", "-y", "-i", src,
+            "-c:v", "libx265", "-preset", "medium", "-crf", "20",
+            "-x265-params", "open-gop=0",
+            "-g", str(gop_size), "-bf", "3",
+            "-profile:v", "main", "-pix_fmt", "yuv420p",
+            "-c:a", "copy", "-tag:v", "hvc1",
+            dest,
+        ], capture_output=True, timeout=600)
+        return result.returncode == 0 and os.path.exists(dest)
+    except Exception:
+        return False
+
 
 def _normalize_audio(src: str, dest: str) -> bool:
     """
@@ -551,6 +792,16 @@ def _compress_to_target(src: str, dest: str, target_mb: float, duration_s: float
         scale = "scale=-2:720"
     else:
         scale = "scale=trunc(iw/2)*2:trunc(ih/2)*2"
+
+    if _try_gpu_encode([
+        "-i", "{input0}",
+        "-vf", scale,
+        "-c:v", "h264_nvenc", "-preset", "p4", "-b:v", str(video_bps),
+        "-c:a", "aac", "-b:a", "96k",
+        "-movflags", "+faststart",
+        "-f", "mp4", "{output}",
+    ], [src], dest):
+        return True
 
     cmd = [
         "ffmpeg", "-y", "-i", src,
