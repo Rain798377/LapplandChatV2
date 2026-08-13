@@ -19,7 +19,7 @@ from core.colors import *
 groq_client = Groq(api_key=GROQ_API_KEY)
 gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-GEMINI_MODEL = "gemini-3.5-flash"
+GEMINI_MODEL = "gemini-3.5-flash-lite"
 
 # retry-after values above this are treated as a daily/quota exhaustion
 # rather than a short per-minute limit
