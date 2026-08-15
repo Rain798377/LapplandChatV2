@@ -193,7 +193,8 @@ async def on_message(message: discord.Message):
         if random.random() > REPLY_CHANCE:
             add_to_history(message.channel.id, message.author.display_name, content)
             if len(content.split()) > 5 and random.random() < 0.75:
-                update_memory_from_conversation(
+                await asyncio.to_thread(
+                    update_memory_from_conversation,
                     message.channel.id, str(message.author.id),
                     message.author.display_name, memory, histories
                 )
@@ -201,7 +202,13 @@ async def on_message(message: discord.Message):
 
     async with message.channel.typing():
         try:
-            reply = get_ai_response(
+            # get_ai_response()/update_memory_from_conversation() are plain
+            # blocking functions (synchronous Groq/Gemini HTTP calls) -- run
+            # them off-thread so a slow reasoning-model generation doesn't
+            # stall the bot's event loop and cause other interactions (slash
+            # commands) to miss Discord's 3s ack window and 404.
+            reply = await asyncio.to_thread(
+                get_ai_response,
                 message.channel.id,
                 content,
                 message.author.display_name,
@@ -209,7 +216,8 @@ async def on_message(message: discord.Message):
                 image_urls=image_urls if has_images else None,
             )
             if len(content.split()) > 5 and random.random() < 0.75:
-                update_memory_from_conversation(
+                await asyncio.to_thread(
+                    update_memory_from_conversation,
                     message.channel.id, str(message.author.id),
                     message.author.display_name, memory, histories
                 )
