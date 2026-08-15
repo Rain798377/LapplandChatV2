@@ -1,9 +1,7 @@
 import asyncio
-import queue
 import random
 import discord
 import os
-import threading
 import time
 from discord import app_commands
 
@@ -12,7 +10,7 @@ from core.config import (DISCORD_TOKEN, MIN_CHARS, REPLY_TO_ALL, REPLY_CHANCE, G
 from core.channels import allowed_channels
 from core.memory import load_memory, update_memory_from_conversation
 from core.ai import (histories, get_ai_response, add_to_history, maybe_shift_mood)
-from core.imagegen import generate_image
+from core.imagegen import enqueue_generate_image
 from core.checksum import checksum
 from core.colors import *
 from commands import random_cmds, memory_cmds, misc_cmds, spotify_cmds, downloader_cmds, call_cmds, channel_cmds
@@ -83,19 +81,20 @@ async def imagine_cmd(
     # message. The full prompt still goes to generate_image() untouched.
     display_prompt = prompt if len(prompt) <= 1000 else prompt[:1000] + "..."
 
-    # generate_image() is a blocking generator (Modal's remote_gen() does
-    # blocking network I/O between yields, even from an async caller -- not
-    # a real async generator despite its type hint). Run it on a worker
-    # thread so waiting between progress updates doesn't stall the bot's
-    # event loop; the thread relays updates back through a plain queue.
-    update_queue: "queue.Queue" = queue.Queue()
+    # enqueue_generate_image() hands the job to a shared worker thread rather
+    # than running it here directly -- Modal's remote_gen() does blocking
+    # network I/O between yields even from an async caller, so this still
+    # has to be polled off-thread, but queueing also means concurrent
+    # /imagine calls line up behind one warm container instead of each
+    # spinning up their own (see core/imagegen.py's job-queue note).
+    update_queue, position = enqueue_generate_image(
+        prompt, negative_prompt=negative_prompt, width=width, height=height, steps=steps, cfg=cfg
+    )
 
-    def worker():
-        for update in generate_image(prompt, negative_prompt=negative_prompt, width=width, height=height, steps=steps, cfg=cfg):
-            update_queue.put(update)
-        update_queue.put(None)  # sentinel: done
-
-    threading.Thread(target=worker, daemon=True).start()
+    if position > 0:
+        await interaction.edit_original_response(
+            content=f"*{display_prompt}*\nqueued -- #{position + 1} in line..."
+        )
 
     filepath = None
     error = None

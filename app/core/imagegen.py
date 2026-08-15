@@ -12,6 +12,8 @@ call -- see modal_imagegen/README.md.
 
 import os
 import hashlib
+import queue
+import threading
 import time
 import modal
 from core.config import MODAL_APP_NAME, MODAL_CLS_NAME
@@ -80,3 +82,83 @@ def generate_image(
 
     print(f"{LIGHT_GREEN}[imagegen] generated: {filename}{RESET}", flush=True)
     yield {"type": "done", "path": filename}
+
+
+# ── Job queue ─────────────────────────────────────────────────────────────
+# The deployed Modal container (see modal_imagegen/app.py) only ever runs one
+# ComfyUI prompt at a time -- there's no in-container concurrency. Without a
+# queue here, several people running /imagine at once would each spin up
+# their own container (Modal auto-scales on concurrent calls), meaning
+# duplicate cold starts and duplicate GPU billing for work that has to happen
+# one at a time on the ComfyUI side regardless. A single persistent worker
+# thread pulling off a FIFO queue keeps concurrent requests sharing one warm
+# container and gives callers an honest queue position to show the user.
+_job_queue: "queue.Queue" = queue.Queue()
+_worker_thread = None
+_worker_lock = threading.Lock()
+
+# Jobs queued *and* the one currently being processed -- plain qsize() only
+# counts jobs still waiting, so a request arriving while the worker is mid-job
+# (queue empty, one job in flight) would otherwise be told position 0 /
+# "starts immediately" when a job is actually still ahead of it.
+_pending = 0
+_pending_lock = threading.Lock()
+
+
+def _worker():
+    global _pending
+    while True:
+        prompt, kwargs, update_queue = _job_queue.get()
+        try:
+            for update in generate_image(prompt, **kwargs):
+                update_queue.put(update)
+        except Exception as e:
+            update_queue.put({"type": "error", "message": str(e)})
+        finally:
+            update_queue.put(None)  # sentinel: done
+            _job_queue.task_done()
+            with _pending_lock:
+                _pending -= 1
+
+
+def _ensure_worker():
+    global _worker_thread
+    with _worker_lock:
+        if _worker_thread is None or not _worker_thread.is_alive():
+            _worker_thread = threading.Thread(target=_worker, daemon=True)
+            _worker_thread.start()
+
+
+def enqueue_generate_image(
+    prompt: str,
+    negative_prompt: str = "",
+    width: int = None,
+    height: int = None,
+    steps: int = None,
+    cfg: float = None,
+):
+    """
+    Queue an image-generation job instead of calling generate_image()
+    directly. Jobs run strictly one at a time, FIFO, on a shared worker
+    thread -- see the module note above for why.
+
+    Returns (update_queue, position):
+      - update_queue: a plain queue.Queue the caller should poll (e.g. via
+        asyncio.to_thread(update_queue.get)) for the same
+        {"type": "progress"/"done"/"error"} updates generate_image() yields,
+        terminated by a None sentinel.
+      - position: how many jobs were already ahead of this one (0 means it
+        starts immediately).
+    """
+    global _pending
+    _ensure_worker()
+    update_queue: "queue.Queue" = queue.Queue()
+    with _pending_lock:
+        position = _pending
+        _pending += 1
+    _job_queue.put((
+        prompt,
+        dict(negative_prompt=negative_prompt, width=width, height=height, steps=steps, cfg=cfg),
+        update_queue,
+    ))
+    return update_queue, position
