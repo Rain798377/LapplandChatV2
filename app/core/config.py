@@ -2,7 +2,7 @@ import os
 import random
 
 # Model config
-MODEL                 = "llama-3.3-70b-versatile"
+MODEL                 = "qwen/qwen3.6-27b"
 MOODS                 = ["chill", "playful", "sarcastic", "tired", "hyper", "annoyed"]
 GREETINGS             = {"hello", "hi", "hey", "sup", "yo", "hiya", "heya", "howdy", "morning", "evening", "wsp"}
 
