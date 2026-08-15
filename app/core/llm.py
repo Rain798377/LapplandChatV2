@@ -9,6 +9,7 @@ Env vars: GROQ_API_KEY, GEMINI_API_KEY (see core/config.py)
 """
 
 import base64
+import re
 import time
 from groq import Groq, RateLimitError
 from google import genai
@@ -28,6 +29,13 @@ DAILY_LIMIT_RETRY_AFTER_SECONDS = 120
 GROQ_COOLDOWN_SECONDS = 6 * 60 * 60
 
 _groq_daily_limited_until = 0.0
+
+# Reasoning models (Qwen3, DeepSeek-R1-distill, gpt-oss, etc.) think out loud
+# before answering. Groq's own fix for that is the reasoning_format param --
+# "hidden" drops the reasoning tokens server-side and leaves only the final
+# answer in message.content. Non-reasoning models (e.g. VISION_MODEL) just
+# ignore the param, so this is safe to send on every call.
+_THINK_TAG_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
 
 def _retry_after_seconds(err: RateLimitError) -> float:
@@ -106,9 +114,11 @@ def chat_completion(messages: list[dict], model: str = MODEL, max_tokens: int = 
                 messages=messages,
                 max_tokens=max_tokens,
                 temperature=temperature,
+                reasoning_format="hidden",
             )
             print(f"{LIGHT_GREEN}[llm] served by groq ({model}){RESET}", flush=True)
-            return response.choices[0].message.content.strip()
+            content = response.choices[0].message.content.strip()
+            return _THINK_TAG_RE.sub("", content).strip()
         except RateLimitError as e:
             if _is_daily_limit(e):
                 cooldown = _retry_after_seconds(e) or GROQ_COOLDOWN_SECONDS

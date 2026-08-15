@@ -96,7 +96,11 @@ def get_ai_response(
     reply = chat_completion(
         messages=[{"role": "system", "content": filled_prompt}] + histories[channel_id],
         model=MODEL,
-        max_tokens=300,
+        # MODEL is a reasoning model (see core/llm.py's reasoning_format="hidden") --
+        # its reasoning tokens count against max_tokens even though they're not
+        # returned, so this needs more headroom than a plain instruct model would
+        # to leave room for a visible answer after it's done thinking.
+        max_tokens=800,
         temperature=0.9,
     )
     reply = re.sub(r'^[^:]{1,50}:\s*', '', reply).strip()
