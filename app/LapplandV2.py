@@ -1,6 +1,10 @@
+import asyncio
+import queue
 import random
 import discord
 import os
+import threading
+import time
 from discord import app_commands
 
 from core import ai
@@ -45,17 +49,89 @@ def get_image_attachments(message: discord.Message) -> list[str]:
     ]
 
 # ── Slash command: /imagine ───────────────────────────────────────────────────
+def render_progress_bar(step: int, total: int, length: int = 12) -> str:
+    if not total:
+        return "⬜" * length
+    filled = min(length, round(length * step / total))
+    return "⬜" * filled + "⬛" * (length - filled)
+
+
 @tree.command(name="imagine", description="Generate an image from a prompt")
-@app_commands.describe(prompt="What do you want Lappland to draw?")
+@app_commands.describe(
+    prompt="What do you want Lappland to draw?",
+    negative_prompt="What to avoid in the image (default: workflow's built-in negative prompt)",
+    width="Image width (default: workflow's built-in resolution)",
+    height="Image height (default: workflow's built-in resolution)",
+    steps="Sampling steps (default: workflow's built-in step count)",
+    cfg="Classifier-free guidance scale (default: workflow's built-in cfg)",
+)
 @app_commands.allowed_installs(guilds=True, users=True)
 @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
-async def imagine_cmd(interaction: discord.Interaction, prompt: str):
+async def imagine_cmd(
+    interaction: discord.Interaction,
+    prompt: str,
+    negative_prompt: str = "",
+    width: int = None,
+    height: int = None,
+    steps: int = None,
+    cfg: float = None,
+):
     await interaction.response.defer()
-    filepath = generate_image(prompt)
+
+    # Discord messages cap out at 2000 chars -- truncate just the displayed
+    # copy so an overly long prompt can't break sending the progress/result
+    # message. The full prompt still goes to generate_image() untouched.
+    display_prompt = prompt if len(prompt) <= 1000 else prompt[:1000] + "..."
+
+    # generate_image() is a blocking generator (Modal's remote_gen() does
+    # blocking network I/O between yields, even from an async caller -- not
+    # a real async generator despite its type hint). Run it on a worker
+    # thread so waiting between progress updates doesn't stall the bot's
+    # event loop; the thread relays updates back through a plain queue.
+    update_queue: "queue.Queue" = queue.Queue()
+
+    def worker():
+        for update in generate_image(prompt, negative_prompt=negative_prompt, width=width, height=height, steps=steps, cfg=cfg):
+            update_queue.put(update)
+        update_queue.put(None)  # sentinel: done
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    filepath = None
+    error = None
+    start = time.monotonic()
+    last_edit = 0.0
+
+    while True:
+        update = await asyncio.to_thread(update_queue.get)
+        if update is None:
+            break
+        if update["type"] == "progress":
+            step, total = update["step"], update["total"]
+            now = time.monotonic()
+            # Throttle edits to every ~2s (Discord rate-limits message edits),
+            # but always show the final step's update immediately.
+            if now - last_edit < 2 and step < total:
+                continue
+            last_edit = now
+
+            bar = render_progress_bar(step, total)
+            percent = int(100 * step / total) if total else 0
+            elapsed = now - start
+            eta = (elapsed / step) * (total - step) if step else None
+            eta_text = f"~{eta:.0f}s left" if eta and eta > 1 else "almost done"
+            await interaction.edit_original_response(
+                content=f"*{display_prompt}*\n{bar} {percent}% ({eta_text})"
+            )
+        elif update["type"] == "done":
+            filepath = update["path"]
+        elif update["type"] == "error":
+            error = update["message"]
+
     if filepath and os.path.exists(filepath):
-        await interaction.followup.send(
-            content=f"*{prompt}*",
-            file=discord.File(filepath),
+        await interaction.edit_original_response(
+            content=f"*{display_prompt}*",
+            attachments=[discord.File(filepath)],
         )
         # Clean up the temp file after sending
         try:
@@ -63,15 +139,14 @@ async def imagine_cmd(interaction: discord.Interaction, prompt: str):
         except Exception:
             pass
     else:
-        await interaction.followup.send(
-            "couldn't generate that image, sorry. check that CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN are set.",
-            ephemeral=True,
+        await interaction.edit_original_response(
+            content=f"couldn't generate that image, sorry.{f' ({error})' if error else ''}",
         )
 
 # ── Events ────────────────────────────────────────────────────────────────────
 @bot.event
 async def on_ready():
-    guild = discord.Object(id=1434279163346423963)
+    guild = discord.Object(id=1529210886802247690)
     tree.copy_global_to(guild=guild)
     await tree.sync(guild=guild)
     await tree.sync()

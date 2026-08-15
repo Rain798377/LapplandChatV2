@@ -15,3 +15,4 @@ discord-ext-voice-recv @ git+https://github.com/imayhaveborkedit/discord-ext-voi
 httpx
 fonttools
 spotdl
+modal

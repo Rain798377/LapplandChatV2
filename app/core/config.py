@@ -10,8 +10,6 @@ GREETINGS             = {"hello", "hi", "hey", "sup", "yo", "hiya", "heya", "how
 DISCORD_TOKEN         = os.environ.get("DISCORD_TOKEN")
 GROQ_API_KEY          = os.environ.get("GROQ_API_KEY")
 GEMINI_API_KEY        = os.environ.get("GEMINI_API_KEY")
-CLOUDFLARE_ACCOUNT_ID = os.environ.get("CLOUDFLARE_ACCOUNT_ID")
-CLOUDFLARE_API_TOKEN  = os.environ.get("CLOUDFLARE_API_TOKEN")
 SPOTIFY_CLIENT_ID     = os.environ.get("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET")
 
@@ -58,6 +56,27 @@ GPU_WORKER_URL           = os.environ.get("GPU_WORKER_URL", "")
 GPU_WORKER_API_KEY       = os.environ.get("GPU_WORKER_API_KEY")
 GPU_WORKER_CONNECT_TIMEOUT = 3    # seconds -- fail fast when the laptop is off
 GPU_WORKER_RETRY_COOLDOWN  = 120  # seconds to skip the worker after it's found unreachable
+
+# Image generation config -- self-hosted "Filigree-Anima" checkpoint (a
+# Cosmos-Predict2-2B finetune with a swapped-in Qwen3 text encoder), run via
+# an actual ComfyUI instance inside a Modal container (see
+# modal_imagegen/app.py + README.md). All three are local files (personal
+# downloads, not a vendor model), so there's no API token, just paths --
+# modal_imagegen/app.py reads them (relative to app/) to know what to bake
+# into the deployed container. MODAL_APP_NAME/MODAL_CLS_NAME are shared with
+# core/imagegen.py so the caller and the deployed app agree on what they're
+# both named.
+#
+# Sampler/scheduler/resolution/cfg aren't duplicated here -- they live in
+# modal_imagegen/workflow_template.json (the actual exported ComfyUI
+# workflow), which is the real source of truth for those and would drift out
+# of sync with a second hardcoded copy.
+ANIMA_MODEL_PATH = os.environ.get("ANIMA_MODEL_PATH", "models/anima/Filigree-Anima-v2.0.safetensors")
+MODAL_APP_NAME    = "anima-imagegen"
+MODAL_CLS_NAME    = "AnimaImageGen"
+
+QWEN_TEXT_ENCODER_PATH = os.environ.get("QWEN_TEXT_ENCODER_PATH", "models/qwen_image/qwen_3_06b_base.safetensors")
+QWEN_VAE_PATH           = os.environ.get("QWEN_VAE_PATH", "models/qwen_image/qwen_image_vae.safetensors")
 
 
 SYSTEM_PROMPT = f"""you are {BOT_NAME}. you're in a discord server. be normal. short replies unless the question needs detail. no asterisks. don't mention being an AI. different people talk in the same channel - pay attention to who said what and treat each person's messages in context of what THEY said, not the whole conversation. Do not be so formal, talk casually. You may use short terms such as lmao, lol, bruh, etc. Make sure it fits the tone of the conversation.

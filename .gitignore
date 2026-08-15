@@ -1,6 +1,10 @@
 .env
 __pycache__/
 backups/
+app/models/*
+!app/models/anima/
+app/models/anima/*
+!app/models/anima/*.txt
 data/memory.json
 data/allowed_channels.json
 todo
@@ -10,3 +14,4 @@ CLAUDE.md
 create_test_video.py
 test_suite/
 input.mp4
+/data/images
