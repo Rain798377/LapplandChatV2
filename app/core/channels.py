@@ -1,24 +1,31 @@
 import os
 import json
-from core.config import ALLOWED_CHANNELS_FILE, ALLOWED_CHANNELS as DEFAULT_ALLOWED_CHANNELS
+from core.config import (
+    ALLOWED_CHANNELS_FILE, ALLOWED_CHANNELS as DEFAULT_ALLOWED_CHANNELS,
+    IDLE_CHANNELS_FILE, IDLE_CHANNELS as DEFAULT_IDLE_CHANNELS,
+)
 
 
-def _load() -> list[int]:
-    if os.path.exists(ALLOWED_CHANNELS_FILE):
-        with open(ALLOWED_CHANNELS_FILE, "r") as f:
+def _load(path: str, default: list[int]) -> list[int]:
+    if os.path.exists(path):
+        with open(path, "r") as f:
             return json.load(f)
-    return list(DEFAULT_ALLOWED_CHANNELS)
+    return list(default)
 
 
-def _save():
-    os.makedirs(os.path.dirname(ALLOWED_CHANNELS_FILE), exist_ok=True)
-    with open(ALLOWED_CHANNELS_FILE, "w") as f:
-        json.dump(allowed_channels, f, indent=2)
+def _save(path: str, channel_ids: list[int]):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(channel_ids, f, indent=2)
 
 
 # Mutated in place by add_channel/remove_channel — keep a single shared list
 # object so anything that imported it directly (e.g. LapplandV2.py) sees updates.
-allowed_channels: list[int] = _load()
+allowed_channels: list[int] = _load(ALLOWED_CHANNELS_FILE, DEFAULT_ALLOWED_CHANNELS)
+# Same pattern, separate list: channels eligible for unprompted idle chatter
+# (see LapplandV2.py's idle_chatter task). Independent of allowed_channels --
+# a channel doesn't need to be in the normal listen list to get idle lines.
+idle_channels: list[int] = _load(IDLE_CHANNELS_FILE, DEFAULT_IDLE_CHANNELS)
 
 
 def add_channel(channel_id: int) -> bool:
@@ -26,7 +33,7 @@ def add_channel(channel_id: int) -> bool:
     if channel_id in allowed_channels:
         return False
     allowed_channels.append(channel_id)
-    _save()
+    _save(ALLOWED_CHANNELS_FILE, allowed_channels)
     return True
 
 
@@ -35,5 +42,23 @@ def remove_channel(channel_id: int) -> bool:
     if channel_id not in allowed_channels:
         return False
     allowed_channels.remove(channel_id)
-    _save()
+    _save(ALLOWED_CHANNELS_FILE, allowed_channels)
+    return True
+
+
+def add_idle_channel(channel_id: int) -> bool:
+    """Add a channel to the idle-chatter list. Returns False if already there."""
+    if channel_id in idle_channels:
+        return False
+    idle_channels.append(channel_id)
+    _save(IDLE_CHANNELS_FILE, idle_channels)
+    return True
+
+
+def remove_idle_channel(channel_id: int) -> bool:
+    """Remove a channel from the idle-chatter list. Returns False if it wasn't there."""
+    if channel_id not in idle_channels:
+        return False
+    idle_channels.remove(channel_id)
+    _save(IDLE_CHANNELS_FILE, idle_channels)
     return True

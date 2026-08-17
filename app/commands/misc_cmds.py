@@ -3,10 +3,11 @@ import random
 import asyncio
 import aiohttp
 import discord
-from core import ai
+from core import ai, llm
 from datetime import datetime
 from discord import app_commands
 from core.config import BOT_OWNER_ID
+from core.llm import DEFAULT_PROVIDER_CHAIN
 from core.permissions import is_admin
 from core.quote_image import render_quote
 
@@ -59,6 +60,32 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
             return
         ai.current_mood = mood
         await interaction.response.send_message(f"Mood changed to {mood}!")
+
+    @tree.command(name="ai-provider", description="Force the AI onto one provider, or back to auto fallback (admin only)")
+    @app_commands.describe(provider="Which provider to force, or auto for normal fallback behavior")
+    @app_commands.choices(provider=[
+        app_commands.Choice(name="Auto (normal fallback chain)", value="auto"),
+        *[app_commands.Choice(name=name.capitalize(), value=name) for name in DEFAULT_PROVIDER_CHAIN],
+    ])
+    async def ai_provider(interaction: discord.Interaction, provider: app_commands.Choice[str]):
+        if not is_admin(interaction):
+            await interaction.response.send_message("You're not an administrator.", ephemeral=True)
+            return
+
+        if provider.value == "auto":
+            llm.set_forced_provider(None)
+            await interaction.response.send_message("Back to normal fallback routing (auto).", ephemeral=True)
+            return
+
+        if llm.is_provider_disabled(provider.value):
+            await interaction.response.send_message(
+                f"Can't force {provider.name} -- it's disabled (no API key configured, or its key already failed auth).",
+                ephemeral=True,
+            )
+            return
+
+        llm.set_forced_provider(provider.value)
+        await interaction.response.send_message(f"AI provider forced to **{provider.name}**.", ephemeral=True)
 
     @tree.command(name="ping", description="Check the bot's latency")
     @app_commands.allowed_installs(guilds=True, users=True)
