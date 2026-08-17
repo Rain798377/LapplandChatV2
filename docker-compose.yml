@@ -7,10 +7,12 @@ services:
       TTS_SERVER_URL: http://192.9.148.110:8000/tts
       TTS_SERVER_TOKEN: REPLACE_WITH_YOUR_TTS_SERVER_TOKEN
       STT_SERVER_URL: http://stt:8801
+      INTENT_SERVER_URL: http://intent:8803
     container_name: lappland
     restart: unless-stopped
     depends_on:
       - stt
+      - intent
     volumes:
       - ./app:/app
       - ./data:/app/data
@@ -19,3 +21,10 @@ services:
     build: ./stt
     container_name: lappland-stt
     restart: unless-stopped
+
+  intent:
+    build: ./intent_server
+    container_name: lappland-intent
+    restart: unless-stopped
+    volumes:
+      - ./intent_server:/app

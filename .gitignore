@@ -7,6 +7,7 @@ app/models/anima/*
 !app/models/anima/*.txt
 data/memory.json
 data/allowed_channels.json
+data/idle_channels.json
 todo
 .venv/
 CLAUDE.md
