@@ -9,7 +9,6 @@ Env vars: GROQ_API_KEY, GEMINI_API_KEY (see core/config.py)
 """
 
 import base64
-import re
 import time
 from groq import Groq, RateLimitError
 from google import genai
@@ -30,12 +29,13 @@ GROQ_COOLDOWN_SECONDS = 6 * 60 * 60
 
 _groq_daily_limited_until = 0.0
 
-# Reasoning models (Qwen3, DeepSeek-R1-distill, gpt-oss, etc.) think out loud
-# before answering. Groq's own fix for that is the reasoning_format param --
-# "hidden" drops the reasoning tokens server-side and leaves only the final
-# answer in message.content. Non-reasoning models (e.g. VISION_MODEL) just
-# ignore the param, so this is safe to send on every call.
-_THINK_TAG_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+# qwen/qwen3.6-27b (MODEL) is a reasoning model that thinks out loud before
+# answering, which ate into max_tokens and could exhaust the whole budget on
+# hidden reasoning before writing a visible reply. reasoning_effort="none" is
+# a Qwen-3.6-27b-specific param that turns reasoning off entirely -- other
+# Groq models (e.g. VISION_MODEL) don't support it, so it's only sent for
+# this model rather than on every call.
+_REASONING_EFFORT_MODELS = {"qwen/qwen3.6-27b"}
 
 
 def _retry_after_seconds(err: RateLimitError) -> float:
@@ -107,6 +107,8 @@ def chat_completion(messages: list[dict], model: str = MODEL, max_tokens: int = 
         print(f"{LIGHT_BLUE}[llm] served by gemini ({GEMINI_MODEL}, groq cooling down){RESET}", flush=True)
         return reply
 
+    extra_params = {"reasoning_effort": "none"} if model in _REASONING_EFFORT_MODELS else {}
+
     for attempt in range(2):
         try:
             response = groq_client.chat.completions.create(
@@ -114,11 +116,10 @@ def chat_completion(messages: list[dict], model: str = MODEL, max_tokens: int = 
                 messages=messages,
                 max_tokens=max_tokens,
                 temperature=temperature,
-                reasoning_format="hidden",
+                **extra_params,
             )
             print(f"{LIGHT_GREEN}[llm] served by groq ({model}){RESET}", flush=True)
-            content = response.choices[0].message.content.strip()
-            return _THINK_TAG_RE.sub("", content).strip()
+            return response.choices[0].message.content.strip()
         except RateLimitError as e:
             if _is_daily_limit(e):
                 cooldown = _retry_after_seconds(e) or GROQ_COOLDOWN_SECONDS

@@ -15,6 +15,12 @@ MOOD_SHIFT_EVERY = random.randint(15, 30)
 # Vision model — Groq-hosted, supports image input
 VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 
+# MODEL is a reasoning model -- if it burns its whole max_tokens budget on
+# hidden reasoning before writing a visible answer, chat_completion() returns
+# "" and Discord's API 400s on message.reply("") (error 50006). Substitute
+# this instead of ever returning an empty reply.
+_EMPTY_REPLY_FALLBACK = "..."
+
 
 def maybe_shift_mood():
     global current_mood, mood_message_counter, MOOD_SHIFT_EVERY
@@ -79,7 +85,7 @@ def get_ai_response(
             max_tokens=400,
             temperature=0.9,
         )
-        reply = re.sub(r'^[^:]{1,50}:\s*', '', reply).strip()
+        reply = re.sub(r'^[^:]{1,50}:\s*', '', reply).strip() or _EMPTY_REPLY_FALLBACK
 
         # Add to history as plain text so future turns stay compatible
         histories[channel_id].append({"role": "user", "content": text_part})
@@ -96,14 +102,12 @@ def get_ai_response(
     reply = chat_completion(
         messages=[{"role": "system", "content": filled_prompt}] + histories[channel_id],
         model=MODEL,
-        # MODEL is a reasoning model (see core/llm.py's reasoning_format="hidden") --
-        # its reasoning tokens count against max_tokens even though they're not
-        # returned, so this needs more headroom than a plain instruct model would
-        # to leave room for a visible answer after it's done thinking.
-        max_tokens=800,
+        # core/llm.py sends reasoning_effort="none" for MODEL, so no hidden
+        # reasoning tokens eat into this budget -- back to a plain reply size.
+        max_tokens=300,
         temperature=0.9,
     )
-    reply = re.sub(r'^[^:]{1,50}:\s*', '', reply).strip()
+    reply = re.sub(r'^[^:]{1,50}:\s*', '', reply).strip() or _EMPTY_REPLY_FALLBACK
     histories[channel_id].append({"role": "assistant", "content": reply})
     return reply
 
