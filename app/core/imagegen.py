@@ -36,6 +36,7 @@ def generate_image(
     height: int = None,
     steps: int = None,
     cfg: float = None,
+    seed: int = None,
 ):
     """
     Generate an image from a text prompt.
@@ -52,8 +53,10 @@ def generate_image(
     directly -- see the /imagine command in LapplandV2.py for the thread +
     queue bridge.
 
-    width/height/steps/cfg default to whatever workflow_template.json has --
-    only override when the caller actually wants something different.
+    width/height/steps/cfg/seed default to whatever workflow_template.json
+    has -- only override when the caller actually wants something different.
+    seed=None means the Modal app picks a random one each call (see app.py);
+    passing an explicit seed makes the generation reproducible.
     """
     image_bytes = None
     try:
@@ -64,6 +67,7 @@ def generate_image(
             height=height,
             steps=steps,
             cfg=cfg,
+            seed=seed,
         ):
             if update["type"] == "progress":
                 yield update
@@ -136,6 +140,7 @@ def enqueue_generate_image(
     height: int = None,
     steps: int = None,
     cfg: float = None,
+    seed: int = None,
 ):
     """
     Queue an image-generation job instead of calling generate_image()
@@ -158,7 +163,7 @@ def enqueue_generate_image(
         _pending += 1
     _job_queue.put((
         prompt,
-        dict(negative_prompt=negative_prompt, width=width, height=height, steps=steps, cfg=cfg),
+        dict(negative_prompt=negative_prompt, width=width, height=height, steps=steps, cfg=cfg, seed=seed),
         update_queue,
     ))
     return update_queue, position
