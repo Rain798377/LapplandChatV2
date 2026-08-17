@@ -15,3 +15,4 @@ create_test_video.py
 test_suite/
 input.mp4
 /data/images
+app/modal_imagegen/redeploy.ps1
