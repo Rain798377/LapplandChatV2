@@ -1,7 +1,7 @@
 import os
 import json
 from core.colors import *
-from core.config import MEMORY_FILE
+from core.config import MEMORY_FILE, MAX_MEMORY_TOKENS
 from core.llm import chat_completion
 
 
@@ -18,10 +18,27 @@ def save_memory(memory: dict):
         json.dump(memory, f, indent=2)
 
 
+def _approx_tokens(text: str) -> int:
+    # no tokenizer shared across the fallback chain's providers, so this is
+    # a conservative ~4-chars/token estimate rather than an exact count
+    return len(text) // 4
+
+
 def get_user_memory_string(memory: dict) -> str:
     if not memory:
         return "none yet"
-    return "\n".join([f"- {data['display_name']}: {data['notes']}" for data in memory.values()])
+
+    lines = []
+    used_tokens = 0
+    for data in memory.values():
+        line = f"- {data['display_name']}: {data['notes']}"
+        line_tokens = _approx_tokens(line)
+        if used_tokens + line_tokens > MAX_MEMORY_TOKENS:
+            break
+        lines.append(line)
+        used_tokens += line_tokens
+
+    return "\n".join(lines) if lines else "none yet"
 
 
 def update_memory_from_conversation(channel_id: int, user_id: str, display_name: str, memory: dict, histories: dict):
