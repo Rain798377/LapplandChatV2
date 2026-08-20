@@ -117,7 +117,7 @@
   },
   "60:44": {
     "inputs": {
-      "unet_name": "Filigree-Anima-v2.0.safetensors",
+      "unet_name": "Filigree-Anima-v4.0.safetensors",
       "weight_dtype": "default"
     },
     "class_type": "UNETLoader",

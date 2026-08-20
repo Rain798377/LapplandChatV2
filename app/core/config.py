@@ -134,7 +134,7 @@ GPU_WORKER_RETRY_COOLDOWN  = 120  # seconds to skip the worker after it's found 
 # modal_imagegen/workflow_template.json (the actual exported ComfyUI
 # workflow), which is the real source of truth for those and would drift out
 # of sync with a second hardcoded copy.
-ANIMA_MODEL_PATH = os.environ.get("ANIMA_MODEL_PATH", "models/anima/Filigree-Anima-v2.0.safetensors")
+ANIMA_MODEL_PATH = os.environ.get("ANIMA_MODEL_PATH", "models/anima/Filigree-Anima-v4.0.safetensors")
 MODAL_APP_NAME    = "anima-imagegen"
 MODAL_CLS_NAME    = "AnimaImageGen"
 

@@ -64,16 +64,15 @@ would generate the same image every time).
 
 ## Behavior
 
-- GPU: `A10G` by default (bump `GPU_TYPE` in `app.py` if the checkpoint needs
-  more VRAM or you want to trade cost for speed).
+- GPU: `A100-40GB` by default (bump/change `GPU_TYPE` in `app.py` if the
+  checkpoint needs more VRAM or you want to trade cost for speed).
 - `AnimaImageGen.load()` starts ComfyUI as a subprocess on container start
   and waits for `/system_stats` to respond before accepting jobs; `generate()`
   submits the workflow to ComfyUI's own `/prompt` API and polls `/history`
   for the result, the same way you'd drive ComfyUI's API from any other
   client.
-- Containers scale to zero after `scaledown_window` (5 minutes) of
-  inactivity -- no idle GPU cost once nobody's generated anything for that
-  long, but a container that was already warm from a request in the last 5
-  minutes serves the next one immediately with no reload. Only a gap longer
-  than that pays a full cold start (container boot + ComfyUI startup + model
-  load onto the GPU, likely 30-90s+) before ComfyUI starts sampling again.
+- Containers scale to zero `scaledown_window` (5 seconds) after finishing a
+  job -- no idle GPU cost sitting around between generations. The tradeoff is
+  that back-to-back requests almost always pay a full cold start (container
+  boot + ComfyUI startup + model load onto the GPU, likely 30-90s+) instead
+  of reusing a warm container.

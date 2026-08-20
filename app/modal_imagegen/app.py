@@ -80,7 +80,7 @@ if modal.is_local():
         if not _f.exists():
             sys.exit(f"missing file: {_f}")
 
-GPU_TYPE = "T4"
+GPU_TYPE = "A100-40GB"
 COMFYUI_DIR = "/root/ComfyUI"
 
 # Node IDs in workflow_template.json -- fixed as long as the template isn't
@@ -112,7 +112,7 @@ image = (
 )
 
 
-@app.cls(gpu=GPU_TYPE, image=image, timeout=600, scaledown_window=300)
+@app.cls(gpu=GPU_TYPE, image=image, timeout=600, scaledown_window=5)
 class AnimaImageGen:
     @modal.enter()
     def load(self):
