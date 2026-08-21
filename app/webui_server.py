@@ -10,22 +10,27 @@ not duplicated, so persona/mood/memory behave identically either way.
 Endpoints:
     GET  /              -- the chat client (WebUI/index.html)
     GET  /support.js     -- the client's runtime (WebUI/support.js)
+    GET  /images/{file}  -- a generated image (core.imagegen.IMAGES_DIR)
     GET  /api/info       -- bot name, model, mood, provider chain, last
                              provider that actually served a reply
-    POST /api/chat        -- {"message", "username", "user_id"} -> {"reply", "mood", "provider", "isCommand"}
+    POST /api/chat        -- {"message", "username", "user_id"} -> {"reply", "mood", "provider", "isCommand", "image"}
     POST /api/reset       -- clears the local conversation history
 
 A message starting with "/" is dispatched to webui_commands.COMMANDS (text
 equivalents of the bot's Discord slash commands -- see that module's
 docstring for what's ported and, more importantly, what's deliberately not)
 instead of going through get_ai_response(); like Discord's slash commands,
-it never touches conversation history or memory extraction.
+it never touches conversation history or memory extraction. A handler
+normally returns a plain str; /imagine returns {"text", "image"} instead
+(see webui_commands.py) -- "image" on the /api/chat response is that path,
+relative ("/images/<file>"), or null.
 
 Run with `python webui_server.py` from the app/ directory (same as
 LapplandV2.py). Config: WEBUI_HOST / WEBUI_PORT / WEBUI_DIR in core/config.py.
 """
 
 import asyncio
+import os
 import random
 
 from fastapi import FastAPI, HTTPException
@@ -36,6 +41,7 @@ from core import ai
 from core.ai import get_ai_response, histories
 from core.config import BOT_NAME, MODEL, WEBUI_CHANNEL_ID, WEBUI_DIR, WEBUI_HOST, WEBUI_PORT
 from core.colors import *
+from core.imagegen import IMAGES_DIR
 from core.llm import DEFAULT_PROVIDER_CHAIN, describe_error
 import core.llm as llm
 from core.memory import load_memory, update_memory_from_conversation
@@ -60,6 +66,20 @@ def support_js():
     return FileResponse(f"{WEBUI_DIR}/support.js", media_type="application/javascript")
 
 
+@app.get("/images/{filename}")
+def serve_image(filename: str):
+    # os.path.basename strips any directory component a caller tries to
+    # smuggle in (e.g. "../../.env") -- reject outright instead of silently
+    # "correcting" it, so a path-traversal attempt 404s rather than maybe
+    # resolving somewhere unexpected.
+    if filename != os.path.basename(filename):
+        raise HTTPException(status_code=400, detail="invalid filename")
+    path = os.path.join(IMAGES_DIR, filename)
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="not found")
+    return FileResponse(path, media_type="image/png")
+
+
 @app.get("/api/info")
 def info():
     return {
@@ -80,17 +100,22 @@ async def chat(req: ChatRequest):
     if message.startswith("/"):
         name, _, raw_args = message[1:].partition(" ")
         handler = COMMANDS.get(name.lower())
+        image = None
         if handler is None:
             reply = f"unknown command /{name}. try /help."
         else:
             try:
                 # Same reasoning as get_ai_response below -- some handlers
-                # (curl, ip, random word) make a blocking httpx.get() call.
-                reply = await asyncio.to_thread(handler, raw_args.split(), raw_args, req)
+                # (curl, ip, random word, imagine) make a blocking call.
+                result = await asyncio.to_thread(handler, raw_args.split(), raw_args, req)
             except Exception as e:
                 print(f"{RED}[webui] command /{name} failed: {e}{RESET}", flush=True)
-                reply = f"that command hit an error: {e}"
-        return {"reply": reply, "mood": ai.current_mood, "provider": None, "isCommand": True}
+                result = f"that command hit an error: {e}"
+            if isinstance(result, dict):
+                reply, image = result.get("text", ""), result.get("image")
+            else:
+                reply = result
+        return {"reply": reply, "mood": ai.current_mood, "provider": None, "isCommand": True, "image": image}
 
     memory = load_memory()
     try:
@@ -111,7 +136,7 @@ async def chat(req: ChatRequest):
             WEBUI_CHANNEL_ID, req.user_id, req.username, memory, histories,
         )
 
-    return {"reply": reply, "mood": ai.current_mood, "provider": llm.last_provider_used, "isCommand": False}
+    return {"reply": reply, "mood": ai.current_mood, "provider": llm.last_provider_used, "isCommand": False, "image": None}
 
 
 @app.post("/api/reset")

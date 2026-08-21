@@ -116,6 +116,9 @@
                   </div>
                 </sc-if>
                 <div style="color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; text-wrap: pretty;">{{ msg.body }}</div>
+                <sc-if value="{{ msg.image }}" hint-placeholder-val="{{ false }}">
+                  <img src="{{ msg.image }}" alt="generated image" style="max-width: 420px; width: 100%; height: auto; border-radius: 10px; margin-top: 8px; display: block; border: 1px solid var(--field-line);" />
+                </sc-if>
                 <sc-if value="{{ msg.stats }}" hint-placeholder-val="{{ false }}">
                   <div style="font-family: 'Azeret Mono', monospace; font-size: 10.5px; color: var(--mute); margin-top: 5px;">{{ msg.stats }}</div>
                 </sc-if>
@@ -451,7 +454,8 @@ class Component extends DCLogic {
           lastProvider: (ok && data.provider) || s.lastProvider,
           messages: [...s.messages, {
             id: Date.now() + 1, author: s.botName, bot: true, hue: HUES.bot, t: this.now(), body,
-            stats: !ok ? false : (data.isCommand ? `${elapsedS.toFixed(1)}s · command` : `${tok} tok · ${elapsedS.toFixed(1)}s${data.provider ? " · " + data.provider : ""}`)
+            image: (ok && data.image) || false,
+            stats: !ok ? false : (data.image ? `generated in ${elapsedS.toFixed(1)}s` : data.isCommand ? `${elapsedS.toFixed(1)}s · command` : `${tok} tok · ${elapsedS.toFixed(1)}s${data.provider ? " · " + data.provider : ""}`)
           }]
         }));
       })
@@ -512,7 +516,7 @@ class Component extends DCLogic {
       const mm = live ? Object.assign({}, m, { hue: pr.hue, photo: pr.photo }) : m;
       return {
         showAvatar: !grouped, isBot: !!m.bot, author: m.author, time: m.t, body: m.body,
-        badge: badge(mm), stats: m.stats || false,
+        badge: badge(mm), stats: m.stats || false, image: m.image || false,
         avatarStyle: this.avatarStyle(mm),
         nameStyle: `font-weight:600;font-size:14px;color:oklch(${p.nameL} 0.09 ${mm.hue});`,
         rowStyle: `display:flex;gap:12px;padding:${grouped ? "1px" : "7px"} 12px 2px 8px;border-radius:6px;`

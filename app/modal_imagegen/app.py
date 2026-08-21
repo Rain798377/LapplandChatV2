@@ -119,6 +119,13 @@ image = (
     .run_commands(f"git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git {COMFYUI_DIR}")
     .run_commands(f"pip install -r {COMFYUI_DIR}/requirements.txt")
     .pip_install("requests", "websocket-client", "diffusers", "transformers", "numpy", "pillow")
+    # HF_HUB_DISABLE_PROGRESS_BARS: this RUN step's only output is a tqdm
+    # download bar nobody's watching interactively (it's a headless build
+    # log) -- and on at least some Windows consoles, `modal deploy`'s local
+    # log streaming crashes trying to encode the bar's block-drawing
+    # characters ('cp932' codec can't encode '█'). Disabling it
+    # sidesteps that regardless of whoever's terminal is running the deploy.
+    .env({"HF_HUB_DISABLE_PROGRESS_BARS": "1"})
     .run_commands(
         "python -c \""
         "from transformers import CLIPImageProcessor; "

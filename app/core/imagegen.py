@@ -19,6 +19,13 @@ import modal
 from core.config import MODAL_APP_NAME, MODAL_CLS_NAME
 from core.colors import *
 
+# Relative to cwd (app/), same convention as MEMORY_FILE etc. in core/config.py.
+# Not itself in config.py since nothing else needs to override it -- but
+# pulled into a constant (rather than inline string literals below) so
+# webui_server.py's image-serving route can import the exact same path
+# instead of duplicating it and risking drift.
+IMAGES_DIR = "data/images"
+
 _cls = None
 
 
@@ -78,9 +85,9 @@ def generate_image(
         yield {"type": "error", "message": str(e)}
         return
 
-    os.makedirs("data/images", exist_ok=True)
+    os.makedirs(IMAGES_DIR, exist_ok=True)
     slug = hashlib.md5(prompt.encode()).hexdigest()[:8]
-    filename = f"data/images/{slug}_{int(time.time())}.png"
+    filename = f"{IMAGES_DIR}/{slug}_{int(time.time())}.png"
     with open(filename, "wb") as f:
         f.write(image_bytes)
 

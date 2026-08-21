@@ -17,9 +17,9 @@ skipped rather than silently missing):
                                         -- Discord channel management; the
                                           web UI has exactly one conversation
                                           and is always listening.
-  - /quote, /random meme, "Make Quote" -- render/return images; the web chat
-                                          only renders text messages today.
-  - /imagine                           -- explicitly held off per instruction.
+  - /quote, /random meme, "Make Quote" -- the chat can render images now
+                                          (see cmd_imagine below), but these
+                                          weren't asked for -- separate task.
   - /terminal                          -- arbitrary shell execution. Discord
                                           gates it to BOT_OWNER_ID; this
                                           server has no auth, and any web
@@ -31,15 +31,29 @@ skipped rather than silently missing):
 /change_mood, /ai-provider, /memory wipe-all are effectively admin actions on
 Discord (guild-admin gated) -- ported here ungated, since the only person who
 can reach this server is whoever is running it on their own machine.
+
+A command handler normally returns a plain str reply. cmd_imagine is the one
+exception -- it returns {"text": ..., "image": "/images/<file>"} instead, so
+webui_server.py's dispatch accepts either shape rather than every handler
+needing to conform to a richer contract it doesn't use.
+
+/imagine blocks the whole request until the image is done (or fails) instead
+of streaming live progress edits the way Discord's version does -- there's no
+progress channel back to the browser here, just one request/response. Given
+Modal's containers scale to zero after 5s idle (see modal_imagegen/README.md),
+a cold start can make this take 30-90s+; the chat's "thinking" indicator is
+the only feedback for that whole span.
 """
 
 import hashlib
+import os
 import random
 import secrets
 
 import httpx
 
 from core import ai, llm
+from core.imagegen import enqueue_generate_image
 from core.llm import DEFAULT_PROVIDER_CHAIN
 from core.memory import load_memory, save_memory
 
@@ -60,6 +74,7 @@ def cmd_help(args: list[str], raw: str, req) -> str:
         "/ship <name1> <name2> -- compatibility rating",
         "/random number|coin|die|choice|word <...> -- random stuff",
         "/memory wipe|wipe-all|edit <notes>|view -- manage what the bot remembers about you",
+        "/imagine <prompt> -- generate an image (can take 30-90s+ on a cold start)",
     ]
     return "\n".join(lines)
 
@@ -246,6 +261,41 @@ def cmd_memory(args: list[str], raw: str, req) -> str:
     return f"unknown /memory subcommand '{sub}' -- try /help"
 
 
+# ── /imagine ─────────────────────────────────────────────────────────────────
+
+def cmd_imagine(args: list[str], raw: str, req) -> str | dict:
+    prompt = raw.strip()
+    if not prompt:
+        return "usage: /imagine <prompt>"
+
+    # enqueue_generate_image() itself is non-blocking (hands the job to the
+    # shared worker thread and returns immediately) -- the blocking part is
+    # this while loop draining update_queue, which is fine here since the
+    # caller (webui_server.py) already runs this whole function via
+    # asyncio.to_thread, same as get_ai_response().
+    update_queue, position = enqueue_generate_image(prompt)
+    filepath = None
+    error = None
+    while True:
+        update = update_queue.get()
+        if update is None:
+            break
+        if update["type"] == "done":
+            filepath = update["path"]
+        elif update["type"] == "error":
+            error = update["message"]
+        # "progress" updates are dropped -- no channel back to the browser to
+        # stream them through (see module docstring).
+
+    if filepath and os.path.exists(filepath):
+        # Unlike Discord's /imagine (services the file to Discord's CDN then
+        # deletes its local copy), this server IS the host the browser loads
+        # the image from, so the file has to stay on disk -- never cleaned up
+        # here. data/images/ grows unbounded; not addressed, wasn't asked for.
+        return {"text": prompt, "image": f"/images/{os.path.basename(filepath)}"}
+    return f"couldn't generate that image, sorry.{f' ({error})' if error else ''}"
+
+
 COMMANDS = {
     "help": cmd_help,
     "ping": cmd_ping,
@@ -260,4 +310,5 @@ COMMANDS = {
     "ship": cmd_ship,
     "random": cmd_random,
     "memory": cmd_memory,
+    "imagine": cmd_imagine,
 }
