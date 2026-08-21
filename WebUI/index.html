@@ -47,6 +47,19 @@
 
     <div class="scroll" style="flex: 1; overflow-y: auto; padding: 14px 8px; display: flex; flex-direction: column; gap: 18px;">
       <div style="display: flex; flex-direction: column; gap: 2px;">
+        <div style="font-family: 'Azeret Mono', monospace; font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--mute); padding: 0 8px 6px;">Channels</div>
+        <sc-for list="{{ channels }}" as="ch" hint-placeholder-count="4">
+          <button onClick="{{ ch.select }}" style="{{ ch.style }}" style-hover="background: var(--hover); color: var(--strong);">
+            <span style="font-family: 'Azeret Mono', monospace; opacity: 0.5;">#</span>
+            <span style="flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ ch.name }}</span>
+            <sc-if value="{{ ch.live }}" hint-placeholder-val="{{ false }}">
+              <span style="width: 6px; height: 6px; border-radius: 50%; background: oklch(0.72 0.14 145);"></span>
+            </sc-if>
+          </button>
+        </sc-for>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 2px;">
         <div style="font-family: 'Azeret Mono', monospace; font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--mute); padding: 0 8px 6px;">Here</div>
         <sc-for list="{{ members }}" as="m" hint-placeholder-count="2">
           <div style="display: flex; align-items: center; gap: 9px; padding: 5px 8px; border-radius: 6px;" style-hover="background: var(--hover);">
@@ -60,8 +73,7 @@
       </div>
 
       <div style="display: flex; flex-direction: column; gap: 8px;">
-        <div style="font-family: 'Azeret Mono', monospace; font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--mute); padding: 0 8px;">Conversation</div>
-        <button onClick="{{ resetConversation }}" style="display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; border: 1px solid var(--field-line); background: var(--field); color: var(--dim); cursor: pointer; font-size: 13px; padding: 7px 10px; border-radius: 6px;" style-hover="color: var(--strong); border-color: var(--accent);">Start over</button>
+        <button onClick="{{ resetConversation }}" style="display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; border: 1px solid var(--field-line); background: var(--field); color: var(--dim); cursor: pointer; font-size: 13px; padding: 7px 10px; border-radius: 6px;" style-hover="color: var(--strong); border-color: var(--accent);">{{ resetLabel }}</button>
       </div>
     </div>
 
@@ -79,7 +91,8 @@
     <header style="flex: none; height: 54px; padding: 0 20px; display: flex; align-items: center; gap: 14px; border-bottom: 1px solid var(--line); background: var(--bg);">
       <div style="display: flex; align-items: center; gap: 8px; min-width: 0;">
         <span style="{{ statusDotStyle }}"></span>
-        <span style="font-weight: 600; color: var(--strong);">{{ botName }}</span>
+        <span style="font-family: 'Azeret Mono', monospace; color: var(--mute); font-size: 15px;">#</span>
+        <span style="font-weight: 600; color: var(--strong);">{{ activeName }}</span>
       </div>
       <div style="width: 1px; height: 22px; background: var(--line);"></div>
       <div style="flex: 1; min-width: 0; font-family: 'Azeret Mono', monospace; font-size: 12px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ statusLine }}</div>
@@ -94,7 +107,7 @@
         <div style="max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; gap: 2px;">
 
           <div style="padding: 0 8px 18px; display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px;">
-            <div style="font-family: 'Azeret Mono', monospace; font-size: 11px; color: var(--mute);">Conversation with {{ botName }}</div>
+            <div style="font-family: 'Azeret Mono', monospace; font-size: 11px; color: var(--mute);">{{ conversationLabel }}</div>
             <div style="flex: 1; height: 1px; background: var(--line);"></div>
           </div>
 
@@ -117,7 +130,7 @@
                 </sc-if>
                 <div style="color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; text-wrap: pretty;">{{ msg.body }}</div>
                 <sc-if value="{{ msg.image }}" hint-placeholder-val="{{ false }}">
-                  <img src="{{ msg.image }}" alt="generated image" style="max-width: 420px; width: 100%; height: auto; border-radius: 10px; margin-top: 8px; display: block; border: 1px solid var(--field-line);" />
+                  <div role="img" aria-label="generated image" style="{{ msg.imageStyle }}"></div>
                 </sc-if>
                 <sc-if value="{{ msg.stats }}" hint-placeholder-val="{{ false }}">
                   <div style="font-family: 'Azeret Mono', monospace; font-size: 10.5px; color: var(--mute); margin-top: 5px;">{{ msg.stats }}</div>
@@ -291,12 +304,23 @@ const THEMES = {
 
 const DEFAULT_CUSTOM = { bg: "#1b1a24", text: "#e4e1ee", accent: "#8f7ae6", panel: "#15141d" };
 
+// Only "general" ever calls the backend (get_ai_response / /imagine / text
+// commands) -- the other three are purely local note-taking with no fetch()
+// at all, so nothing server-side needs to know channels exist.
+const CHANNELS = [
+  { key: "general", name: "general", topic: "Public channel -- Lappland listens and replies here.", botReplies: true },
+  { key: "bug-reports", name: "bug-reports", topic: "Something broke? Note it here. No bot replies.", botReplies: false },
+  { key: "feature-suggestions", name: "feature-suggestions", topic: "Half-formed ideas welcome. No bot replies.", botReplies: false },
+  { key: "off-topic", name: "off-topic", topic: "Anything else -- no bot here.", botReplies: false }
+];
+
 class Component extends DCLogic {
   constructor(props) {
     super(props);
     this.state = {
       draft: "", thinking: false, infoOpen: true, settingsOpen: false,
-      messages: [],
+      active: "general",
+      messages: CHANNELS.reduce((acc, c) => { acc[c.key] = []; return acc; }, {}),
       theme: "dark",
       custom: DEFAULT_CUSTOM,
       profile: { name: "guest", status: "", hue: HUES.you, photo: "" },
@@ -310,12 +334,16 @@ class Component extends DCLogic {
     let saved = null;
     try { saved = JSON.parse(localStorage.getItem(KEY) || "null"); } catch (e) { saved = null; }
     if (saved) {
-      this.setState({
+      const savedMessages = (saved.messages && typeof saved.messages === "object" && !Array.isArray(saved.messages)) ? saved.messages : {};
+      this.setState(s => ({
         theme: saved.theme || "dark",
-        custom: Object.assign({}, this.state.custom, saved.custom || {}),
-        profile: Object.assign({}, this.state.profile, saved.profile || {}),
-        messages: Array.isArray(saved.messages) ? saved.messages : []
-      });
+        custom: Object.assign({}, s.custom, saved.custom || {}),
+        profile: Object.assign({}, s.profile, saved.profile || {}),
+        messages: CHANNELS.reduce((acc, c) => {
+          acc[c.key] = Array.isArray(savedMessages[c.key]) ? savedMessages[c.key] : [];
+          return acc;
+        }, {})
+      }));
     }
 
     let uid = null;
@@ -326,8 +354,8 @@ class Component extends DCLogic {
     }
     this._uid = uid;
 
-    if (!this.state.messages.length) {
-      this.setState(s => ({ messages: [this._greeting(s.botName)] }));
+    if (!this.state.messages.general.length) {
+      this.setState(s => ({ messages: { ...s.messages, general: [this._greeting(s.botName)] } }));
     }
 
     this.refreshInfo();
@@ -342,9 +370,10 @@ class Component extends DCLogic {
   persist() {
     const s = this.state;
     try {
+      const trimmed = {};
+      for (const c of CHANNELS) trimmed[c.key] = (s.messages[c.key] || []).slice(-200);
       localStorage.setItem(KEY, JSON.stringify({
-        theme: s.theme, custom: s.custom, profile: s.profile,
-        messages: s.messages.slice(-200)
+        theme: s.theme, custom: s.custom, profile: s.profile, messages: trimmed
       }));
     } catch (e) { /* quota or blocked storage -- UI keeps working */ }
   }
@@ -431,10 +460,20 @@ class Component extends DCLogic {
 
   send = () => {
     const text = this.state.draft.trim();
-    if (!text || this.state.thinking) return;
+    if (!text) return;
+    const active = this.state.active;
+    const chan = CHANNELS.find(c => c.key === active);
     const pr = this.state.profile;
     const msg = { id: Date.now(), author: pr.name || "guest", hue: pr.hue, photo: pr.photo, t: this.now(), body: text };
-    this.setState(s => ({ draft: "", messages: [...s.messages, msg], thinking: true }));
+
+    if (!chan.botReplies) {
+      // Bot-free channel -- just append locally, no fetch at all.
+      this.setState(s => ({ draft: "", messages: { ...s.messages, [active]: [...s.messages[active], msg] } }));
+      return;
+    }
+
+    if (this.state.thinking) return;
+    this.setState(s => ({ draft: "", messages: { ...s.messages, general: [...s.messages.general, msg] }, thinking: true }));
 
     const startedAt = Date.now();
     fetch("/api/chat", {
@@ -452,27 +491,44 @@ class Component extends DCLogic {
           connected: ok,
           mood: (ok && data.mood) || s.mood,
           lastProvider: (ok && data.provider) || s.lastProvider,
-          messages: [...s.messages, {
+          messages: { ...s.messages, general: [...s.messages.general, {
             id: Date.now() + 1, author: s.botName, bot: true, hue: HUES.bot, t: this.now(), body,
             image: (ok && data.image) || false,
             stats: !ok ? false : (data.image ? `generated in ${elapsedS.toFixed(1)}s` : data.isCommand ? `${elapsedS.toFixed(1)}s · command` : `${tok} tok · ${elapsedS.toFixed(1)}s${data.provider ? " · " + data.provider : ""}`)
-          }]
+          }] }
         }));
       })
       .catch(() => {
         this.setState(s => ({
           thinking: false, connected: false,
-          messages: [...s.messages, {
+          messages: { ...s.messages, general: [...s.messages.general, {
             id: Date.now() + 1, author: s.botName, bot: true, hue: HUES.bot, t: this.now(),
             body: "can't reach the local server -- is webui_server.py running?"
-          }]
+          }] }
         }));
       });
   };
 
+  // Sidebar "Reset #<channel>" -- clears only the active channel. Only
+  // "general" has server-side history to clear too.
   resetConversation = () => {
+    const active = this.state.active;
+    if (active === "general") fetch("/api/reset", { method: "POST" }).catch(() => {});
+    this.setState(s => ({
+      messages: { ...s.messages, [active]: active === "general" ? [this._greeting(s.botName)] : [] }
+    }));
+  };
+
+  // Settings "Clear chat history" -- clears every channel, unlike the
+  // sidebar's per-channel reset above.
+  clearHistory = () => {
     fetch("/api/reset", { method: "POST" }).catch(() => {});
-    this.setState(s => ({ messages: [this._greeting(s.botName)] }));
+    this.setState(s => ({
+      messages: CHANNELS.reduce((acc, c) => {
+        acc[c.key] = c.key === "general" ? [this._greeting(s.botName)] : [];
+        return acc;
+      }, {})
+    }));
   };
 
   setProfile(patch) { this.setState(s => ({ profile: Object.assign({}, s.profile, patch) })); }
@@ -502,6 +558,8 @@ class Component extends DCLogic {
     const st = this.state;
     const p = this.palette();
     const pr = st.profile;
+    const chan = CHANNELS.find(c => c.key === st.active) || CHANNELS[0];
+    const activeMessages = st.messages[st.active] || [];
     const badge = m => (m.photo ? "" : (m.author || m.name || "?").slice(0, 1).toUpperCase());
 
     const members = [
@@ -509,14 +567,15 @@ class Component extends DCLogic {
       { name: pr.name || "guest", hue: pr.hue, photo: pr.photo }
     ];
 
-    const msgs = st.messages.map((m, i) => {
-      const prev = st.messages[i - 1];
+    const msgs = activeMessages.map((m, i) => {
+      const prev = activeMessages[i - 1];
       const grouped = prev && prev.author === m.author && !prev.stats;
       const live = !m.bot && m.author === pr.name;
       const mm = live ? Object.assign({}, m, { hue: pr.hue, photo: pr.photo }) : m;
       return {
         showAvatar: !grouped, isBot: !!m.bot, author: m.author, time: m.t, body: m.body,
         badge: badge(mm), stats: m.stats || false, image: m.image || false,
+        imageStyle: m.image ? `background-image:url(${m.image});background-size:contain;background-repeat:no-repeat;background-position:left center;background-color:var(--field);width:100%;max-width:420px;height:420px;border-radius:10px;margin-top:8px;border:1px solid var(--field-line);` : undefined,
         avatarStyle: this.avatarStyle(mm),
         nameStyle: `font-weight:600;font-size:14px;color:oklch(${p.nameL} 0.09 ${mm.hue});`,
         rowStyle: `display:flex;gap:12px;padding:${grouped ? "1px" : "7px"} 12px 2px 8px;border-radius:6px;`
@@ -531,13 +590,13 @@ class Component extends DCLogic {
     return {
       themeVars: this.themeVars(),
       messages: msgs,
-      thinking: st.thinking,
+      thinking: st.thinking && chan.botReplies,
       infoOpen: st.infoOpen,
       toggleInfo: () => this.setState(s => ({ infoOpen: !s.infoOpen })),
       themeLabel: st.theme,
       cycleTheme: () => this.setState(s => ({ theme: s.theme === "dark" ? "light" : s.theme === "light" ? "custom" : "dark" })),
       draft: st.draft,
-      placeholder: `Message ${st.botName} (or /help for commands)`,
+      placeholder: chan.botReplies ? `Message ${st.botName} (or /help for commands)` : `Message #${chan.name}`,
       charCount: st.draft.length ? `${st.draft.length} chars` : "",
       onDraft: e => this.setState({ draft: e.target.value }),
       onKey: e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); this.send(); } },
@@ -549,8 +608,17 @@ class Component extends DCLogic {
 
       botName: st.botName,
       modelLabel: st.model,
+      activeName: chan.name,
+      conversationLabel: chan.botReplies ? `Conversation with ${st.botName}` : `#${chan.name}`,
+      resetLabel: `Reset #${chan.name}`,
       statusDotStyle: `width:6px;height:6px;border-radius:50%;background:${st.connected ? "oklch(0.72 0.14 145)" : "oklch(0.6 0.18 25)"};`,
-      statusLine: st.connected ? `${st.mood} · via ${st.lastProvider || "…"}` : "backend unreachable",
+      statusLine: chan.botReplies ? (st.connected ? `${st.mood} · via ${st.lastProvider || "…"}` : "backend unreachable") : chan.topic,
+
+      channels: CHANNELS.map(c => ({
+        name: c.name, live: c.botReplies,
+        select: () => this.setState({ active: c.key }),
+        style: `display:flex;align-items:center;gap:8px;width:100%;text-align:left;border:0;cursor:pointer;font-size:14px;padding:6px 8px;border-radius:6px;background:${c.key === st.active ? "var(--hover)" : "transparent"};color:${c.key === st.active ? "var(--strong)" : "var(--dim)"};`
+      })),
 
       members: members.map(m => ({
         name: m.name, isBot: !!m.isBot, badge: badge(m),
@@ -593,13 +661,17 @@ class Component extends DCLogic {
         onChange: e => this.setCustom({ [f.key]: e.target.value })
       })),
       resetCustom: () => this.setState({ custom: DEFAULT_CUSTOM }),
-      storageNote: `Profile, theme and the last ${Math.min(st.messages.length, 200)} messages are kept in this browser. Conversation memory itself lives on the local server.`,
-      clearHistory: this.resetConversation,
+      storageNote: `Profile, theme and the last 200 messages per channel are kept in this browser. Conversation memory for #general lives on the local server.`,
+      clearHistory: this.clearHistory,
       resetAll: () => {
         try { localStorage.removeItem(KEY); } catch (e) {}
         fetch("/api/reset", { method: "POST" }).catch(() => {});
         this.setState(s => ({
-          theme: "dark", messages: [this._greeting(s.botName)],
+          theme: "dark",
+          messages: CHANNELS.reduce((acc, c) => {
+            acc[c.key] = c.key === "general" ? [this._greeting(s.botName)] : [];
+            return acc;
+          }, {}),
           custom: DEFAULT_CUSTOM,
           profile: { name: "guest", status: "", hue: HUES.you, photo: "" }
         }));
@@ -609,9 +681,9 @@ class Component extends DCLogic {
         { k: "model", v: st.model },
         { k: "served by", v: st.lastProvider || "…" },
         { k: "mood", v: st.mood },
-        { k: "history", v: `${st.messages.length} messages` }
+        { k: "history", v: `${activeMessages.length} in #${chan.name}` }
       ],
-      about: `${st.botName} answers through ${st.model}, falling back across Groq → Gemini → Cloudflare → Mistral → OpenRouter if a provider is rate-limited or down. Type /help for text commands.`
+      about: `${st.botName} answers through ${st.model}, falling back across Groq → Gemini → Cloudflare → Mistral → OpenRouter if a provider is rate-limited or down. Type /help for text commands. #general is the only channel Lappland reads -- bug-reports, feature-suggestions and off-topic are just notes for you.`
     };
   }
 }
