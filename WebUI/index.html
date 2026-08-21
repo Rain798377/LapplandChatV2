@@ -451,7 +451,7 @@ class Component extends DCLogic {
           lastProvider: (ok && data.provider) || s.lastProvider,
           messages: [...s.messages, {
             id: Date.now() + 1, author: s.botName, bot: true, hue: HUES.bot, t: this.now(), body,
-            stats: ok ? `${tok} tok · ${elapsedS.toFixed(1)}s${data.provider ? " · " + data.provider : ""}` : false
+            stats: !ok ? false : (data.isCommand ? `${elapsedS.toFixed(1)}s · command` : `${tok} tok · ${elapsedS.toFixed(1)}s${data.provider ? " · " + data.provider : ""}`)
           }]
         }));
       })
@@ -533,7 +533,7 @@ class Component extends DCLogic {
       themeLabel: st.theme,
       cycleTheme: () => this.setState(s => ({ theme: s.theme === "dark" ? "light" : s.theme === "light" ? "custom" : "dark" })),
       draft: st.draft,
-      placeholder: `Message ${st.botName}`,
+      placeholder: `Message ${st.botName} (or /help for commands)`,
       charCount: st.draft.length ? `${st.draft.length} chars` : "",
       onDraft: e => this.setState({ draft: e.target.value }),
       onKey: e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); this.send(); } },
@@ -607,7 +607,7 @@ class Component extends DCLogic {
         { k: "mood", v: st.mood },
         { k: "history", v: `${st.messages.length} messages` }
       ],
-      about: `${st.botName} answers through ${st.model}, falling back across Groq → Gemini → Cloudflare → Mistral → OpenRouter if a provider is rate-limited or down.`
+      about: `${st.botName} answers through ${st.model}, falling back across Groq → Gemini → Cloudflare → Mistral → OpenRouter if a provider is rate-limited or down. Type /help for text commands.`
     };
   }
 }

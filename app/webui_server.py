@@ -12,8 +12,14 @@ Endpoints:
     GET  /support.js     -- the client's runtime (WebUI/support.js)
     GET  /api/info       -- bot name, model, mood, provider chain, last
                              provider that actually served a reply
-    POST /api/chat        -- {"message", "username", "user_id"} -> {"reply", "mood", "provider"}
+    POST /api/chat        -- {"message", "username", "user_id"} -> {"reply", "mood", "provider", "isCommand"}
     POST /api/reset       -- clears the local conversation history
+
+A message starting with "/" is dispatched to webui_commands.COMMANDS (text
+equivalents of the bot's Discord slash commands -- see that module's
+docstring for what's ported and, more importantly, what's deliberately not)
+instead of going through get_ai_response(); like Discord's slash commands,
+it never touches conversation history or memory extraction.
 
 Run with `python webui_server.py` from the app/ directory (same as
 LapplandV2.py). Config: WEBUI_HOST / WEBUI_PORT / WEBUI_DIR in core/config.py.
@@ -33,6 +39,7 @@ from core.colors import *
 from core.llm import DEFAULT_PROVIDER_CHAIN, describe_error
 import core.llm as llm
 from core.memory import load_memory, update_memory_from_conversation
+from webui_commands import COMMANDS
 
 app = FastAPI()
 
@@ -70,6 +77,21 @@ async def chat(req: ChatRequest):
     if not message:
         raise HTTPException(status_code=400, detail="message is required")
 
+    if message.startswith("/"):
+        name, _, raw_args = message[1:].partition(" ")
+        handler = COMMANDS.get(name.lower())
+        if handler is None:
+            reply = f"unknown command /{name}. try /help."
+        else:
+            try:
+                # Same reasoning as get_ai_response below -- some handlers
+                # (curl, ip, random word) make a blocking httpx.get() call.
+                reply = await asyncio.to_thread(handler, raw_args.split(), raw_args, req)
+            except Exception as e:
+                print(f"{RED}[webui] command /{name} failed: {e}{RESET}", flush=True)
+                reply = f"that command hit an error: {e}"
+        return {"reply": reply, "mood": ai.current_mood, "provider": None, "isCommand": True}
+
     memory = load_memory()
     try:
         # get_ai_response() is a plain blocking function (synchronous
@@ -89,7 +111,7 @@ async def chat(req: ChatRequest):
             WEBUI_CHANNEL_ID, req.user_id, req.username, memory, histories,
         )
 
-    return {"reply": reply, "mood": ai.current_mood, "provider": llm.last_provider_used}
+    return {"reply": reply, "mood": ai.current_mood, "provider": llm.last_provider_used, "isCommand": False}
 
 
 @app.post("/api/reset")
