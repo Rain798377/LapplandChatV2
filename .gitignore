@@ -17,3 +17,4 @@ test_suite/
 input.mp4
 /data/images
 app/modal_imagegen/redeploy.ps1
+/app/data
