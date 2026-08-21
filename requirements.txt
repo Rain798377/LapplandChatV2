@@ -16,3 +16,8 @@ httpx
 fonttools
 spotdl
 modal
+# pinned to satisfy spotdl's own fastapi/uvicorn requirement (spotdl 4.5.0
+# needs fastapi<0.104, uvicorn<0.24) -- webui_server.py only needs the basics
+# both ranges already provide
+fastapi<0.104,>=0.103.0
+uvicorn<0.24,>=0.23.2

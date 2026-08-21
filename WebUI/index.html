@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lappland</title>
 <script src="./support.js"></script>
 </head>
 <body>
@@ -37,29 +38,16 @@
 <div style="{{ themeVars }}">
 <div style="height: 100vh; display: flex; background: var(--bg); color: var(--text); font-family: Archivo, system-ui, sans-serif; font-size: 15px; line-height: 1.55; overflow: hidden;">
 
-  <aside style="width: 232px; flex: none; display: flex; flex-direction: column; background: var(--side); border-right: 1px solid var(--line);">
+  <aside style="width: 220px; flex: none; display: flex; flex-direction: column; background: var(--side); border-right: 1px solid var(--line);">
     <div style="padding: 18px 16px 14px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 3px;">
       <div style="font-size: 15px; font-weight: 600; color: var(--strong); letter-spacing: -0.01em;">{{ botName }}</div>
-      <div style="font-family: 'Azeret Mono', monospace; font-size: 11px; color: var(--mute);">llama.cpp · local</div>
+      <div style="font-family: 'Azeret Mono', monospace; font-size: 11px; color: var(--mute);">{{ modelLabel }}</div>
     </div>
 
     <div class="scroll" style="flex: 1; overflow-y: auto; padding: 14px 8px; display: flex; flex-direction: column; gap: 18px;">
       <div style="display: flex; flex-direction: column; gap: 2px;">
-        <div style="font-family: 'Azeret Mono', monospace; font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--mute); padding: 0 8px 6px;">Channels</div>
-        <sc-for list="{{ channels }}" as="ch" hint-placeholder-count="4">
-          <button onClick="{{ ch.select }}" style="{{ ch.style }}" style-hover="background: var(--hover); color: var(--strong);">
-            <span style="font-family: 'Azeret Mono', monospace; opacity: 0.5;">#</span>
-            <span style="flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ ch.name }}</span>
-            <sc-if value="{{ ch.live }}" hint-placeholder-val="{{ false }}">
-              <span style="width: 6px; height: 6px; border-radius: 50%; background: oklch(0.72 0.14 145);"></span>
-            </sc-if>
-          </button>
-        </sc-for>
-      </div>
-
-      <div style="display: flex; flex-direction: column; gap: 2px;">
-        <div style="font-family: 'Azeret Mono', monospace; font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--mute); padding: 0 8px 6px;">In here now</div>
-        <sc-for list="{{ members }}" as="m" hint-placeholder-count="4">
+        <div style="font-family: 'Azeret Mono', monospace; font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--mute); padding: 0 8px 6px;">Here</div>
+        <sc-for list="{{ members }}" as="m" hint-placeholder-count="2">
           <div style="display: flex; align-items: center; gap: 9px; padding: 5px 8px; border-radius: 6px;" style-hover="background: var(--hover);">
             <div style="{{ m.avatarStyle }}">{{ m.badge }}</div>
             <span style="flex: 1; font-size: 13.5px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ m.name }}</span>
@@ -68,6 +56,11 @@
             </sc-if>
           </div>
         </sc-for>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 8px;">
+        <div style="font-family: 'Azeret Mono', monospace; font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--mute); padding: 0 8px;">Conversation</div>
+        <button onClick="{{ resetConversation }}" style="display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; border: 1px solid var(--field-line); background: var(--field); color: var(--dim); cursor: pointer; font-size: 13px; padding: 7px 10px; border-radius: 6px;" style-hover="color: var(--strong); border-color: var(--accent);">Start over</button>
       </div>
     </div>
 
@@ -83,14 +76,13 @@
 
   <main style="flex: 1; min-width: 0; display: flex; flex-direction: column;">
     <header style="flex: none; height: 54px; padding: 0 20px; display: flex; align-items: center; gap: 14px; border-bottom: 1px solid var(--line); background: var(--bg);">
-      <div style="display: flex; align-items: baseline; gap: 8px; min-width: 0;">
-        <span style="font-family: 'Azeret Mono', monospace; color: var(--mute); font-size: 16px;">#</span>
-        <span style="font-weight: 600; color: var(--strong);">{{ activeName }}</span>
+      <div style="display: flex; align-items: center; gap: 8px; min-width: 0;">
+        <span style="{{ statusDotStyle }}"></span>
+        <span style="font-weight: 600; color: var(--strong);">{{ botName }}</span>
       </div>
       <div style="width: 1px; height: 22px; background: var(--line);"></div>
-      <div style="flex: 1; min-width: 0; font-size: 13px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ activeTopic }}</div>
+      <div style="flex: 1; min-width: 0; font-family: 'Azeret Mono', monospace; font-size: 12px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ statusLine }}</div>
       <div style="display: flex; align-items: center; gap: 8px; flex: none;">
-        <span style="font-family: 'Azeret Mono', monospace; font-size: 11px; color: var(--mute);">{{ modelLabel }}</span>
         <button onClick="{{ cycleTheme }}" style="font-family: 'Azeret Mono', monospace; font-size: 11px; padding: 5px 10px; border-radius: 6px; border: 1px solid var(--field-line); background: var(--field); color: var(--dim); cursor: pointer;" style-hover="color: var(--strong);">{{ themeLabel }}</button>
         <button onClick="{{ toggleInfo }}" style="font-family: 'Azeret Mono', monospace; font-size: 11px; padding: 5px 10px; border-radius: 6px; border: 1px solid var(--field-line); background: var(--field); color: var(--dim); cursor: pointer;" style-hover="color: var(--strong);">details</button>
       </div>
@@ -101,7 +93,7 @@
         <div style="max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; gap: 2px;">
 
           <div style="padding: 0 8px 18px; display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px;">
-            <div style="font-family: 'Azeret Mono', monospace; font-size: 11px; color: var(--mute);">#{{ activeName }} created 14 Mar</div>
+            <div style="font-family: 'Azeret Mono', monospace; font-size: 11px; color: var(--mute);">Conversation with {{ botName }}</div>
             <div style="flex: 1; height: 1px; background: var(--line);"></div>
           </div>
 
@@ -154,20 +146,16 @@
         <aside class="scroll" style="width: 268px; flex: none; overflow-y: auto; border-left: 1px solid var(--line); background: var(--panel); padding: 18px 16px; display: flex; flex-direction: column; gap: 22px;">
           <div style="display: flex; flex-direction: column; gap: 10px;">
             <div style="font-family: 'Azeret Mono', monospace; font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--mute);">Runtime</div>
-            <sc-for list="{{ runtime }}" as="r" hint-placeholder-count="5">
+            <sc-for list="{{ runtime }}" as="r" hint-placeholder-count="4">
               <div style="display: flex; justify-content: space-between; gap: 10px; font-size: 13px;">
                 <span style="color: var(--dim);">{{ r.k }}</span>
                 <span style="font-family: 'Azeret Mono', monospace; font-size: 12px; color: var(--text); text-align: right;">{{ r.v }}</span>
               </div>
             </sc-for>
           </div>
-          <div style="display: flex; flex-direction: column; gap: 10px;">
-            <div style="font-family: 'Azeret Mono', monospace; font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--mute);">Share</div>
-            <div style="font-family: 'Azeret Mono', monospace; font-size: 11.5px; color: var(--dim); background: var(--field); border: 1px solid var(--field-line); border-radius: 6px; padding: 9px 10px; overflow-wrap: anywhere;">{{ shareLink }}</div>
-          </div>
           <div style="display: flex; flex-direction: column; gap: 8px;">
-            <div style="font-family: 'Azeret Mono', monospace; font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--mute);">System prompt</div>
-            <div style="font-size: 13px; color: var(--dim); background: var(--field); border: 1px solid var(--field-line); border-radius: 6px; padding: 10px; line-height: 1.5;">{{ systemPrompt }}</div>
+            <div style="font-family: 'Azeret Mono', monospace; font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--mute);">About</div>
+            <div style="font-size: 13px; color: var(--dim); background: var(--field); border: 1px solid var(--field-line); border-radius: 6px; padding: 10px; line-height: 1.5;">{{ about }}</div>
           </div>
         </aside>
       </sc-if>
@@ -219,7 +207,7 @@
 
             <label style="display: flex; flex-direction: column; gap: 5px;">
               <span style="font-size: 12.5px; color: var(--dim);">Status</span>
-              <input value="{{ statusDraft }}" onChange="{{ onStatus }}" maxlength="28" placeholder="guest link" style="background: var(--field); border: 1px solid var(--field-line); border-radius: 7px; padding: 9px 11px; color: var(--text); font-size: 14px; outline: none;" style-focus="border-color: var(--accent);" />
+              <input value="{{ statusDraft }}" onChange="{{ onStatus }}" maxlength="28" placeholder="say something about yourself" style="background: var(--field); border: 1px solid var(--field-line); border-radius: 7px; padding: 9px 11px; color: var(--text); font-size: 14px; outline: none;" style-focus="border-color: var(--accent);" />
             </label>
 
             <div style="display: flex; flex-direction: column; gap: 7px;">
@@ -276,9 +264,10 @@
 </div>
 
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props="{&quot;botName&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;Loom&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;modelLabel&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;qwen2.5-7b-instruct-q4&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;shareLink&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;loom.chat/c/ask-the-bot#g7xk2&quot;,&quot;tsType&quot;:&quot;string&quot;}}">
-const KEY = "loom.chat.v1";
-const HUES = { bot: 78, a: 55, b: 320, c: 150, d: 265 };
+<script type="text/x-dc" data-dc-script data-props="{&quot;botName&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;Lappland&quot;,&quot;tsType&quot;:&quot;string&quot;}}">
+const KEY = "lappland.webui.v1";
+const UID_KEY = "lappland.webui.uid";
+const HUES = { bot: 78, you: 265 };
 const SWATCH_HUES = [78, 30, 355, 320, 265, 220, 150];
 
 const THEMES = {
@@ -296,33 +285,22 @@ const THEMES = {
   }
 };
 
+const DEFAULT_CUSTOM = { bg: "#1b1a24", text: "#e4e1ee", accent: "#8f7ae6", panel: "#15141d" };
+
 class Component extends DCLogic {
   constructor(props) {
     super(props);
-    const seeded = [
-      { id: 1, author: "mira", hue: HUES.a, t: "10:02", body: "bot's up?" },
-      { id: 2, author: "Loom", bot: true, hue: HUES.bot, t: "10:02", body: "Yep. Docs and changelog are loaded, so ask away." },
-      { id: 3, author: "dex", hue: HUES.b, t: "10:04", body: "what changed in the last release" },
-      { id: 4, author: "Loom", bot: true, hue: HUES.bot, t: "10:04", body: "Retries back off exponentially now, exports handle unicode filenames, and the settings drawer remembers its last tab.\n\nFull diff or just the user-facing notes?", stats: "142 tok · 38.4 tok/s · 3.7s" },
-      { id: 5, author: "dex", hue: HUES.b, t: "10:05", body: "user-facing is fine" }
-    ];
     this.state = {
-      draft: "", active: 0, thinking: false, infoOpen: true, settingsOpen: false,
-      messages: seeded,
+      draft: "", thinking: false, infoOpen: true, settingsOpen: false,
+      messages: [],
       theme: "dark",
-      custom: { bg: "#1b1a24", text: "#e4e1ee", accent: "#8f7ae6", panel: "#15141d" },
-      profile: { name: "guest", status: "guest link", hue: HUES.d, photo: "" },
-      seeded: true
+      custom: DEFAULT_CUSTOM,
+      profile: { name: "guest", status: "", hue: HUES.you, photo: "" },
+      botName: props.botName ?? "Lappland",
+      model: "…", mood: "…", lastProvider: null, connected: true
     };
-    this._seeded = seeded;
+    this._uid = null;
   }
-
-  channels = [
-    { name: "ask-the-bot", topic: "Public channel — the bot answers here. Be nice to it.", live: true },
-    { name: "bug-reports", topic: "Something broke? Paste it here with steps.", live: false },
-    { name: "feature-wishes", topic: "Half-formed ideas welcome.", live: false },
-    { name: "off-topic", topic: "Anything that isn't the product.", live: false }
-  ];
 
   componentDidMount() {
     let saved = null;
@@ -332,9 +310,23 @@ class Component extends DCLogic {
         theme: saved.theme || "dark",
         custom: Object.assign({}, this.state.custom, saved.custom || {}),
         profile: Object.assign({}, this.state.profile, saved.profile || {}),
-        messages: Array.isArray(saved.messages) && saved.messages.length ? saved.messages : this.state.messages
-      }, this.scrollDown);
+        messages: Array.isArray(saved.messages) ? saved.messages : []
+      });
     }
+
+    let uid = null;
+    try { uid = localStorage.getItem(UID_KEY); } catch (e) { uid = null; }
+    if (!uid) {
+      uid = (crypto.randomUUID ? crypto.randomUUID() : ("web-" + Math.random().toString(36).slice(2)));
+      try { localStorage.setItem(UID_KEY, uid); } catch (e) { /* storage blocked -- id just won't persist */ }
+    }
+    this._uid = uid;
+
+    if (!this.state.messages.length) {
+      this.setState(s => ({ messages: [this._greeting(s.botName)] }));
+    }
+
+    this.refreshInfo();
     this.scrollDown();
   }
 
@@ -350,10 +342,27 @@ class Component extends DCLogic {
         theme: s.theme, custom: s.custom, profile: s.profile,
         messages: s.messages.slice(-200)
       }));
-    } catch (e) { /* quota or blocked storage — UI keeps working */ }
+    } catch (e) { /* quota or blocked storage -- UI keeps working */ }
   }
 
   scrollDown = () => { const el = this._scroll; if (el) el.scrollTop = el.scrollHeight; };
+
+  _greeting(botName) {
+    return { id: "greet-" + Date.now(), author: botName, bot: true, hue: HUES.bot, t: this.now(), body: "Hey. What's up?" };
+  }
+
+  refreshInfo = () => {
+    fetch("/api/info")
+      .then(res => { if (!res.ok) throw new Error("bad response"); return res.json(); })
+      .then(data => this.setState({
+        botName: data.botName || this.state.botName,
+        model: data.model || this.state.model,
+        mood: data.mood || this.state.mood,
+        lastProvider: data.lastProvider || null,
+        connected: true
+      }))
+      .catch(() => this.setState({ connected: false }));
+  };
 
   hexToOk(hex, dl, dc) {
     const h = hex.replace("#", "");
@@ -416,32 +425,49 @@ class Component extends DCLogic {
 
   now() { const d = new Date(); return `${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`; }
 
-  reply(text) {
-    const q = text.toLowerCase();
-    if (/^(hi|hello|hey|yo)\b/.test(q)) return "Hey. What do you need?";
-    if (q.includes("?")) return "Works fine as long as the channel is public. Private ones need an invite token, and I won't post there until someone adds me.";
-    if (q.length < 24) return "Give me a bit more and I can be specific.";
-    return "That behaviour is intentional. You can switch it off in channel settings, and if it still misfires paste the log line and I'll read it.";
-  }
-
   send = () => {
     const text = this.state.draft.trim();
     if (!text || this.state.thinking) return;
     const pr = this.state.profile;
     const msg = { id: Date.now(), author: pr.name || "guest", hue: pr.hue, photo: pr.photo, t: this.now(), body: text };
     this.setState(s => ({ draft: "", messages: [...s.messages, msg], thinking: true }));
-    clearTimeout(this._timer);
-    this._timer = setTimeout(() => {
-      const body = this.reply(text);
-      const tok = Math.round(body.length / 3.6);
-      this.setState(s => ({
-        thinking: false,
-        messages: [...s.messages, {
-          id: Date.now() + 1, author: this.props.botName ?? "Loom", bot: true, hue: HUES.bot, t: this.now(), body,
-          stats: `${tok} tok · ${(30 + Math.random() * 18).toFixed(1)} tok/s · ${(1 + Math.random() * 2).toFixed(1)}s`
-        }]
-      }));
-    }, 900 + Math.random() * 800);
+
+    const startedAt = Date.now();
+    fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: text, username: pr.name || "guest", user_id: this._uid })
+    })
+      .then(res => res.json().then(data => ({ ok: res.ok, data })))
+      .then(({ ok, data }) => {
+        const elapsedS = (Date.now() - startedAt) / 1000;
+        const body = ok ? data.reply : (data.detail || "something went wrong talking to the backend.");
+        const tok = Math.round((body || "").length / 3.6);
+        this.setState(s => ({
+          thinking: false,
+          connected: ok,
+          mood: (ok && data.mood) || s.mood,
+          lastProvider: (ok && data.provider) || s.lastProvider,
+          messages: [...s.messages, {
+            id: Date.now() + 1, author: s.botName, bot: true, hue: HUES.bot, t: this.now(), body,
+            stats: ok ? `${tok} tok · ${elapsedS.toFixed(1)}s${data.provider ? " · " + data.provider : ""}` : false
+          }]
+        }));
+      })
+      .catch(() => {
+        this.setState(s => ({
+          thinking: false, connected: false,
+          messages: [...s.messages, {
+            id: Date.now() + 1, author: s.botName, bot: true, hue: HUES.bot, t: this.now(),
+            body: "can't reach the local server -- is webui_server.py running?"
+          }]
+        }));
+      });
+  };
+
+  resetConversation = () => {
+    fetch("/api/reset", { method: "POST" }).catch(() => {});
+    this.setState(s => ({ messages: [this._greeting(s.botName)] }));
   };
 
   setProfile(patch) { this.setState(s => ({ profile: Object.assign({}, s.profile, patch) })); }
@@ -470,16 +496,11 @@ class Component extends DCLogic {
   renderVals() {
     const st = this.state;
     const p = this.palette();
-    const ch = this.channels[st.active];
-    const botName = this.props.botName ?? "Loom";
     const pr = st.profile;
     const badge = m => (m.photo ? "" : (m.author || m.name || "?").slice(0, 1).toUpperCase());
 
     const members = [
-      { name: botName, isBot: true, hue: HUES.bot },
-      { name: "mira", hue: HUES.a },
-      { name: "dex", hue: HUES.b },
-      { name: "sol", hue: HUES.c },
+      { name: st.botName, isBot: true, hue: HUES.bot },
       { name: pr.name || "guest", hue: pr.hue, photo: pr.photo }
     ];
 
@@ -511,7 +532,7 @@ class Component extends DCLogic {
       themeLabel: st.theme,
       cycleTheme: () => this.setState(s => ({ theme: s.theme === "dark" ? "light" : s.theme === "light" ? "custom" : "dark" })),
       draft: st.draft,
-      placeholder: `Message #${ch.name}`,
+      placeholder: `Message ${st.botName}`,
       charCount: st.draft.length ? `${st.draft.length} chars` : "",
       onDraft: e => this.setState({ draft: e.target.value }),
       onKey: e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); this.send(); } },
@@ -520,35 +541,25 @@ class Component extends DCLogic {
       inputRef: el => { this._input = el; },
       scrollRef: el => { this._scroll = el; },
       fileRef: el => { this._file = el; },
-      activeName: ch.name,
-      activeTopic: ch.topic,
-      channels: this.channels.map((c, i) => ({
-        name: c.name, live: c.live,
-        select: () => this.setState({ active: i }),
-        style: `display:flex;align-items:center;gap:8px;width:100%;text-align:left;border:0;cursor:pointer;font-size:14px;padding:6px 8px;border-radius:6px;background:${i === st.active ? "var(--hover)" : "transparent"};color:${i === st.active ? "var(--strong)" : "var(--dim)"};`
-      })),
+
+      botName: st.botName,
+      modelLabel: st.model,
+      statusDotStyle: `width:6px;height:6px;border-radius:50%;background:${st.connected ? "oklch(0.72 0.14 145)" : "oklch(0.6 0.18 25)"};`,
+      statusLine: st.connected ? `${st.mood} · via ${st.lastProvider || "…"}` : "backend unreachable",
+
       members: members.map(m => ({
         name: m.name, isBot: !!m.isBot, badge: badge(m),
         avatarStyle: this.avatarStyle(m, 22)
       })),
-      botName,
-      botBadge: botName.slice(0, 1).toUpperCase(),
-      botAvatarStyle: this.avatarStyle({ author: botName, hue: HUES.bot }),
+      botBadge: st.botName.slice(0, 1).toUpperCase(),
+      botAvatarStyle: this.avatarStyle({ author: st.botName, hue: HUES.bot }),
       youName: pr.name || "guest",
-      youStatus: pr.status || "guest link",
+      youStatus: pr.status || "local guest",
       youBadge: badge({ author: pr.name, photo: pr.photo }),
       youAvatarStyle: this.avatarStyle({ author: pr.name, hue: pr.hue, photo: pr.photo }, 26),
       bigAvatarStyle: this.avatarStyle({ author: pr.name, hue: pr.hue, photo: pr.photo }, 60),
-      modelLabel: this.props.modelLabel ?? "qwen2.5-7b-instruct-q4",
-      shareLink: this.props.shareLink ?? "loom.chat/c/ask-the-bot#g7xk2",
-      systemPrompt: "Answer in a public channel. Keep it short, cite docs where you can, say when you don't know.",
-      runtime: [
-        { k: "backend", v: "llama.cpp server" },
-        { k: "context", v: "4096 / 8192" },
-        { k: "temp", v: "0.7" },
-        { k: "top_p", v: "0.9" },
-        { k: "latency", v: "~1.4s" }
-      ],
+
+      resetConversation: this.resetConversation,
 
       settingsOpen: st.settingsOpen,
       openSettings: () => this.setState({ settingsOpen: true }),
@@ -576,17 +587,26 @@ class Component extends DCLogic {
         label: f.label, value: st.custom[f.key],
         onChange: e => this.setCustom({ [f.key]: e.target.value })
       })),
-      resetCustom: () => this.setState({ custom: { bg: "#1b1a24", text: "#e4e1ee", accent: "#8f7ae6", panel: "#15141d" } }),
-      storageNote: `Profile, theme and the last ${Math.min(st.messages.length, 200)} messages are kept in this browser.`,
-      clearHistory: () => this.setState({ messages: this._seeded }),
+      resetCustom: () => this.setState({ custom: DEFAULT_CUSTOM }),
+      storageNote: `Profile, theme and the last ${Math.min(st.messages.length, 200)} messages are kept in this browser. Conversation memory itself lives on the local server.`,
+      clearHistory: this.resetConversation,
       resetAll: () => {
         try { localStorage.removeItem(KEY); } catch (e) {}
-        this.setState({
-          theme: "dark", messages: this._seeded,
-          custom: { bg: "#1b1a24", text: "#e4e1ee", accent: "#8f7ae6", panel: "#15141d" },
-          profile: { name: "guest", status: "guest link", hue: HUES.d, photo: "" }
-        });
-      }
+        fetch("/api/reset", { method: "POST" }).catch(() => {});
+        this.setState(s => ({
+          theme: "dark", messages: [this._greeting(s.botName)],
+          custom: DEFAULT_CUSTOM,
+          profile: { name: "guest", status: "", hue: HUES.you, photo: "" }
+        }));
+      },
+
+      runtime: [
+        { k: "model", v: st.model },
+        { k: "served by", v: st.lastProvider || "…" },
+        { k: "mood", v: st.mood },
+        { k: "history", v: `${st.messages.length} messages` }
+      ],
+      about: `${st.botName} answers through ${st.model}, falling back across Groq → Gemini → Cloudflare → Mistral → OpenRouter if a provider is rate-limited or down.`
     };
   }
 }

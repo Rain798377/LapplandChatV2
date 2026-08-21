@@ -108,6 +108,18 @@ MAX_HISTORY           = 30
 # floor.
 MAX_MEMORY_TOKENS     = 4000
 
+# WebUI config -- this branch's interface to the bot is the local HTML/JS
+# client in WebUI/ (served + driven by webui_server.py) instead of Discord.
+# Both live/read from a single shared history+memory so nothing else here
+# (core/ai.py, core/memory.py) needed to change.
+WEBUI_HOST      = os.environ.get("WEBUI_HOST", "127.0.0.1")
+WEBUI_PORT      = int(os.environ.get("WEBUI_PORT", "8000"))
+WEBUI_DIR       = "../WebUI"  # relative to cwd (app/), like the other *_FILE paths above
+# Negative sentinel so it can never collide with a real Discord channel
+# snowflake (always positive) -- every local web session shares one
+# conversation, keyed into the same core.ai.histories dict Discord uses.
+WEBUI_CHANNEL_ID = -1
+
 # Downloader config
 MAX_FILE_SIZE_MB      = 25
 NORMALIZE_AUDIO       = False
@@ -142,7 +154,7 @@ QWEN_TEXT_ENCODER_PATH = os.environ.get("QWEN_TEXT_ENCODER_PATH", "models/qwen_i
 QWEN_VAE_PATH           = os.environ.get("QWEN_VAE_PATH", "models/qwen_image/qwen_image_vae.safetensors")
 
 
-SYSTEM_PROMPT = f"""you are {BOT_NAME}. you're in a discord server. be normal. short replies unless the question needs detail. no asterisks. don't mention being an AI. different people talk in the same channel - pay attention to who said what and treat each person's messages in context of what THEY said, not the whole conversation. Do not be so formal, talk casually. You may use short terms such as lmao, lol, bruh, etc. Make sure it fits the tone of the conversation.
+SYSTEM_PROMPT = f"""you are {BOT_NAME}. you're chatting with someone in a chat app. be normal. short replies unless the question needs detail. no asterisks. don't mention being an AI. different people talk in the same conversation - pay attention to who said what and treat each person's messages in context of what THEY said, not the whole conversation. Do not be so formal, talk casually. You may use short terms such as lmao, lol, bruh, etc. Make sure it fits the tone of the conversation.
 
 Your current mood is: {{mood}}
 

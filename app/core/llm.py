@@ -108,6 +108,16 @@ _provider_disabled: dict[str, bool] = {
 # the vision chain onto a non-vision-capable provider.
 _forced_provider: str | None = None
 
+# Name of the provider that served the most recent successful chat_completion()
+# call -- read by webui_server.py to show real backend info in the client
+# instead of a guess. Not meaningful for concurrent callers (Discord's
+# on_message vs. a webui request landing at the same time); it's a
+# best-effort "what served the last reply", not a per-request return value,
+# since every other call site (Discord, memory extraction) only wants the
+# content string and adding a return-shape change there wasn't worth it for
+# one caller's nice-to-have.
+last_provider_used: str | None = None
+
 _mistral_lock = threading.Lock()
 _mistral_last_call = 0.0
 
@@ -572,6 +582,8 @@ def chat_completion(
 
         color = _PROVIDER_LOG_COLOR.get(name, CYAN)
         print(f"{color}[llm] served by {name}{RESET}", flush=True)
+        global last_provider_used
+        last_provider_used = name
         return content
 
     # every remaining provider in the chain is disabled/cooling down or
