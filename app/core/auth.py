@@ -4,10 +4,12 @@ auth.py — accounts for the web UI's login page (WebUI/login.html).
 SQLite-backed (stdlib sqlite3, no new dependency): a `users` table (user_id,
 username, email, password_hash, created_at) and a `sessions` table (token ->
 user_id) backing webui_server.py's /api/register, /api/login, /api/logout,
-/api/me. A fresh connection is opened per call rather than held open --
-sqlite3 connections aren't safe to share across threads, and FastAPI runs
-these off the event loop via asyncio.to_thread, same as every other blocking
-call in this app (see webui_server.py).
+/api/me. Lives in the same WEBUI_DB_FILE as core/chat_store.py's messages
+table -- one file for the web UI's whole server-side state. A fresh
+connection is opened per call rather than held open -- sqlite3 connections
+aren't safe to share across threads, and FastAPI runs these off the event
+loop via asyncio.to_thread, same as every other blocking call in this app
+(see webui_server.py).
 
 Passwords are hashed with PBKDF2-HMAC-SHA256 (hashlib, stdlib) at 260,000
 iterations -- OWASP's 2023 minimum for that algorithm -- rather than pulling
@@ -26,7 +28,7 @@ import sqlite3
 import uuid
 from datetime import datetime, timezone
 
-from core.config import AUTH_DB_FILE
+from core.config import WEBUI_DB_FILE
 
 _HASH_ALGO = "pbkdf2_sha256"
 _HASH_ITERATIONS = 260_000
@@ -41,8 +43,8 @@ class EmailTakenError(ValueError):
 
 
 def _connect() -> sqlite3.Connection:
-    os.makedirs(os.path.dirname(AUTH_DB_FILE), exist_ok=True)
-    conn = sqlite3.connect(AUTH_DB_FILE)
+    os.makedirs(os.path.dirname(WEBUI_DB_FILE), exist_ok=True)
+    conn = sqlite3.connect(WEBUI_DB_FILE)
     conn.row_factory = sqlite3.Row
     return conn
 

@@ -209,16 +209,6 @@
             </div>
             <input type="file" accept="image/*" ref="{{ fileRef }}" onChange="{{ onPhoto }}" style="display: none;" />
 
-            <label class="field">
-              <span style="display: block; font-size: 12px; margin-bottom: 5px; color: color-mix(in srgb, var(--color-text) 70%, transparent);">Display name</span>
-              <input class="input" value="{{ nameDraft }}" onChange="{{ onName }}" maxlength="24" placeholder="your name" />
-            </label>
-
-            <label class="field">
-              <span style="display: block; font-size: 12px; margin-bottom: 5px; color: color-mix(in srgb, var(--color-text) 70%, transparent);">Status</span>
-              <input class="input" value="{{ statusDraft }}" onChange="{{ onStatus }}" maxlength="28" placeholder="say something about yourself" />
-            </label>
-
             <div class="field">
               <span style="display: block; font-size: 12px; margin-bottom: 5px; color: color-mix(in srgb, var(--color-text) 70%, transparent);">Avatar colour</span>
               <div style="display: flex; gap: 8px; flex-wrap: wrap;">
@@ -249,20 +239,37 @@
 
 </x-dc>
 <script type="text/x-dc" data-dc-script data-props="{&quot;botName&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;Lappland&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;infoOpenByDefault&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;}}">
-const KEY = "lappland.webui.v1";
-const UID_KEY = "lappland.webui.uid";
-const HUES = { bot: 289, you: 250 };
+const HUES = { bot: 289 };
 const SWATCH_HUES = [289, 250, 200, 150, 60, 30, 340];
+const PROFILE_KEY = "lappland.webui.profile.v2"; // local-only cosmetic (avatar photo/colour), see module docstring in webui_server.py for why identity itself no longer lives here
+const POLL_MS = 3000;
 
-// Only "general" ever calls the backend (get_ai_response / /imagine / text
-// commands) -- the other three are purely local note-taking with no fetch()
-// at all, so nothing server-side needs to know channels exist.
+// Every channel is now shared/persisted server-side (core/chat_store.py) --
+// everyone viewing a channel sees the same messages. Only "general" also
+// gets bot replies (get_ai_response / /imagine / text commands); the other
+// three are shared note-taking with no LLM call. Must stay in sync with
+// WEBUI_CHANNELS/WEBUI_BOT_CHANNEL in core/config.py.
 const CHANNELS = [
   { key: "general", name: "general", topic: "Public channel -- Lappland listens and replies here.", botReplies: true },
   { key: "bug-reports", name: "bug-reports", topic: "Something broke? Note it here. No bot replies.", botReplies: false },
   { key: "feature-suggestions", name: "feature-suggestions", topic: "Half-formed ideas welcome. No bot replies.", botReplies: false },
   { key: "off-topic", name: "off-topic", topic: "Anything else -- no bot here.", botReplies: false }
 ];
+
+// Deterministic per-username colour so two different people never default to
+// the same hue -- used for anyone who hasn't (can't -- see below) set a
+// custom avatar colour of their own.
+function hueForName(name) {
+  let h = 0;
+  for (let i = 0; i < (name || "").length; i++) h = (h * 31 + name.charCodeAt(i)) % 360;
+  return h;
+}
+
+function formatTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return `${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
 
 class Component extends DCLogic {
   constructor(props) {
@@ -271,28 +278,32 @@ class Component extends DCLogic {
       draft: "", thinking: false, infoOpen: props.infoOpenByDefault ?? true, settingsOpen: false,
       active: "general",
       messages: CHANNELS.reduce((acc, c) => { acc[c.key] = []; return acc; }, {}),
-      profile: { name: "guest", status: "", hue: HUES.you, photo: "" },
+      loaded: CHANNELS.reduce((acc, c) => { acc[c.key] = false; return acc; }, {}),
+      lastIds: CHANNELS.reduce((acc, c) => { acc[c.key] = 0; return acc; }, {}),
+      // Local-only cosmetic overrides for how *your own* messages render in
+      // *your own* browser -- there's nowhere server-side to put an avatar
+      // photo, and other viewers have no way to see it regardless (see
+      // hueForName above for how everyone else's colour is derived instead).
+      profile: { hue: null, photo: "" },
       botName: props.botName ?? "Lappland",
       model: "…", mood: "…", lastProvider: null, connected: true,
       account: null
     };
-    this._uid = null;
   }
 
   // Gate: redirect to the login page if there's no valid session. This is a
-  // client-side check only -- /api/chat etc. don't themselves require a
-  // session (see webui_server.py's docstring) -- so it's a real UX gate, not
-  // a security boundary; fine for a local personal tool, not something to
-  // treat as access control. On success, bootstrap the local display name
-  // from the account's real username the first time only (never overwrites
-  // an already-customized display name).
+  // client-side check only -- see webui_server.py's docstring for what IS
+  // enforced server-side (every /api/* route below /api/register|login does
+  // require a session; this is just the UX redirect on top of that).
   checkAuth = () => {
     fetch("/api/me")
       .then(res => { if (!res.ok) throw new Error("unauthenticated"); return res.json(); })
-      .then(data => this.setState(s => ({
-        account: { userId: data.user_id, username: data.username },
-        profile: (s.profile.name && s.profile.name !== "guest") ? s.profile : { ...s.profile, name: data.username }
-      })))
+      .then(data => {
+        this.setState({ account: { userId: data.user_id, username: data.username } });
+        this.refreshInfo();
+        this.loadChannel(this.state.active);
+        this._poll = setInterval(this.pollActive, POLL_MS);
+      })
       .catch(() => { window.location.href = "/login.html"; });
   };
 
@@ -301,35 +312,11 @@ class Component extends DCLogic {
   };
 
   componentDidMount() {
-    this.checkAuth();
-
     let saved = null;
-    try { saved = JSON.parse(localStorage.getItem(KEY) || "null"); } catch (e) { saved = null; }
-    if (saved) {
-      const savedMessages = (saved.messages && typeof saved.messages === "object" && !Array.isArray(saved.messages)) ? saved.messages : {};
-      this.setState(s => ({
-        profile: Object.assign({}, s.profile, saved.profile || {}),
-        messages: CHANNELS.reduce((acc, c) => {
-          acc[c.key] = Array.isArray(savedMessages[c.key]) ? savedMessages[c.key] : [];
-          return acc;
-        }, {})
-      }));
-    }
+    try { saved = JSON.parse(localStorage.getItem(PROFILE_KEY) || "null"); } catch (e) { saved = null; }
+    if (saved) this.setState(s => ({ profile: Object.assign({}, s.profile, saved) }));
 
-    let uid = null;
-    try { uid = localStorage.getItem(UID_KEY); } catch (e) { uid = null; }
-    if (!uid) {
-      uid = (crypto.randomUUID ? crypto.randomUUID() : ("web-" + Math.random().toString(36).slice(2)));
-      try { localStorage.setItem(UID_KEY, uid); } catch (e) { /* storage blocked -- id just won't persist */ }
-    }
-    this._uid = uid;
-
-    if (!this.state.messages.general.length) {
-      this.setState(s => ({ messages: { ...s.messages, general: [this._greeting(s.botName)] } }));
-    }
-
-    this.refreshInfo();
-    this.scrollDown();
+    this.checkAuth();
   }
 
   componentDidUpdate() {
@@ -337,22 +324,51 @@ class Component extends DCLogic {
     this.persist();
   }
 
+  componentWillUnmount() {
+    clearInterval(this._poll);
+  }
+
   persist() {
-    const s = this.state;
-    try {
-      const trimmed = {};
-      for (const c of CHANNELS) trimmed[c.key] = (s.messages[c.key] || []).slice(-200);
-      localStorage.setItem(KEY, JSON.stringify({
-        profile: s.profile, messages: trimmed
-      }));
-    } catch (e) { /* quota or blocked storage -- UI keeps working */ }
+    try { localStorage.setItem(PROFILE_KEY, JSON.stringify(this.state.profile)); } catch (e) { /* quota or blocked storage -- UI keeps working */ }
   }
 
   scrollDown = () => { const el = this._scroll; if (el) el.scrollTop = el.scrollHeight; };
 
-  _greeting(botName) {
-    return { id: "greet-" + Date.now(), author: botName, bot: true, hue: HUES.bot, t: this.now(), body: "Hey. What's up?" };
-  }
+  // Full history for a channel -- called once the first time it's opened
+  // (see `select` in renderVals's channels list below).
+  loadChannel = key => {
+    fetch(`/api/messages/${key}`)
+      .then(res => { if (!res.ok) throw new Error("bad response"); return res.json(); })
+      .then(data => {
+        const msgs = data.messages || [];
+        this.setState(s => ({
+          messages: { ...s.messages, [key]: msgs },
+          loaded: { ...s.loaded, [key]: true },
+          lastIds: { ...s.lastIds, [key]: msgs.length ? msgs[msgs.length - 1].id : 0 }
+        }));
+      })
+      .catch(() => {});
+  };
+
+  // Short polling, not a push channel -- fine for a 10-20 person group, see
+  // core/chat_store.py's module docstring. Only polls the channel you're
+  // actually looking at.
+  pollActive = () => {
+    const key = this.state.active;
+    if (!this.state.loaded[key]) return;
+    const since = this.state.lastIds[key] || 0;
+    fetch(`/api/messages/${key}?since=${since}`)
+      .then(res => { if (!res.ok) throw new Error("bad response"); return res.json(); })
+      .then(data => {
+        const fresh = data.messages || [];
+        if (!fresh.length) return;
+        this.setState(s => ({
+          messages: { ...s.messages, [key]: [...s.messages[key], ...fresh] },
+          lastIds: { ...s.lastIds, [key]: fresh[fresh.length - 1].id }
+        }));
+      })
+      .catch(() => {});
+  };
 
   refreshInfo = () => {
     fetch("/api/info")
@@ -367,86 +383,80 @@ class Component extends DCLogic {
       .catch(() => this.setState({ connected: false }));
   };
 
-  avatarStyle(m, size) {
+  avatarStyle(hue, photo, size) {
     const s = size || 30;
     const base = `width:${s}px;height:${s}px;border-radius:50%;flex:none;display:grid;place-items:center;font-size:${Math.round(s * 0.4)}px;font-weight:600;overflow:hidden;`;
-    if (m.photo) return base + `background-image:url(${m.photo});background-size:cover;background-position:center;color:transparent;`;
-    return base + `background:oklch(0.45 0.07 ${m.hue});color:oklch(0.96 0.02 ${m.hue});`;
+    if (photo) return base + `background-image:url(${photo});background-size:cover;background-position:center;color:transparent;`;
+    return base + `background:oklch(0.45 0.07 ${hue});color:oklch(0.96 0.02 ${hue});`;
   }
-
-  now() { const d = new Date(); return `${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`; }
 
   send = () => {
     const text = this.state.draft.trim();
     if (!text) return;
     const active = this.state.active;
     const chan = CHANNELS.find(c => c.key === active);
-    const pr = this.state.profile;
-    const msg = { id: Date.now(), author: pr.name || "guest", hue: pr.hue, photo: pr.photo, t: this.now(), body: text };
 
-    if (!chan.botReplies) {
-      // Bot-free channel -- just append locally, no fetch at all.
-      this.setState(s => ({ draft: "", messages: { ...s.messages, [active]: [...s.messages[active], msg] } }));
-      return;
-    }
+    if (chan.botReplies && this.state.thinking) return;
+    this.setState({ draft: "", thinking: chan.botReplies });
 
-    if (this.state.thinking) return;
-    this.setState(s => ({ draft: "", messages: { ...s.messages, general: [...s.messages.general, msg] }, thinking: true }));
-
-    const startedAt = Date.now();
     fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: text, username: pr.name || "guest", user_id: this._uid })
+      body: JSON.stringify({ message: text, channel: active })
     })
       .then(res => res.json().then(data => ({ ok: res.ok, data })))
       .then(({ ok, data }) => {
-        const elapsedS = (Date.now() - startedAt) / 1000;
-        const body = ok ? data.reply : (data.detail || "something went wrong talking to the backend.");
-        const tok = Math.round((body || "").length / 3.6);
-        this.setState(s => ({
-          thinking: false,
-          connected: ok,
-          mood: (ok && data.mood) || s.mood,
-          lastProvider: (ok && data.provider) || s.lastProvider,
-          messages: { ...s.messages, general: [...s.messages.general, {
-            id: Date.now() + 1, author: s.botName, bot: true, hue: HUES.bot, t: this.now(), body,
-            image: (ok && data.image) || false,
-            stats: !ok ? false : (data.image ? `generated in ${elapsedS.toFixed(1)}s` : data.isCommand ? `${elapsedS.toFixed(1)}s · command` : `${tok} tok · ${elapsedS.toFixed(1)}s${data.provider ? " · " + data.provider : ""}`)
-          }] }
-        }));
+        if (!ok) { this.setState({ thinking: false, connected: false }); return; }
+        this.setState(s => {
+          const msgs = [...s.messages[active]];
+          let lastId = s.lastIds[active] || 0;
+          if (data.message) { msgs.push(data.message); lastId = data.message.id; }
+          if (data.reply) { msgs.push(data.reply); lastId = data.reply.id; }
+          return {
+            thinking: false, connected: true,
+            mood: data.mood || s.mood, lastProvider: data.provider || s.lastProvider,
+            messages: { ...s.messages, [active]: msgs },
+            lastIds: { ...s.lastIds, [active]: lastId }
+          };
+        });
       })
-      .catch(() => {
-        this.setState(s => ({
-          thinking: false, connected: false,
-          messages: { ...s.messages, general: [...s.messages.general, {
-            id: Date.now() + 1, author: s.botName, bot: true, hue: HUES.bot, t: this.now(),
-            body: "can't reach the local server -- is webui_server.py running?"
-          }] }
-        }));
-      });
+      .catch(() => this.setState({ thinking: false, connected: false }));
   };
 
-  // Sidebar "Reset #<channel>" -- clears only the active channel. Only
-  // "general" has server-side history to clear too.
+  // Shared helper for both reset actions below -- POST /api/reset for one
+  // channel, then splice its (possibly re-seeded) greeting into local state.
+  _resetChannel = key => {
+    return fetch("/api/reset", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ channel: key })
+    })
+      .then(res => res.json())
+      .then(data => ({ key, greeting: data.greeting || null }));
+  };
+
+  _applyResets = results => {
+    this.setState(s => {
+      const messages = { ...s.messages }, lastIds = { ...s.lastIds };
+      for (const { key, greeting } of results) {
+        messages[key] = greeting ? [greeting] : [];
+        lastIds[key] = greeting ? greeting.id : 0;
+      }
+      return { messages, lastIds };
+    });
+  };
+
+  // Sidebar "Reset #<channel>" -- clears only the active channel, for
+  // everyone (this is a shared table now, not a per-browser one -- see
+  // core/chat_store.py). No per-user permission tier exists yet, so any
+  // signed-in account can do this to any channel.
   resetConversation = () => {
-    const active = this.state.active;
-    if (active === "general") fetch("/api/reset", { method: "POST" }).catch(() => {});
-    this.setState(s => ({
-      messages: { ...s.messages, [active]: active === "general" ? [this._greeting(s.botName)] : [] }
-    }));
+    this._resetChannel(this.state.active).then(r => this._applyResets([r]));
   };
 
   // Settings "Clear chat history" -- clears every channel, unlike the
   // sidebar's per-channel reset above.
   clearHistory = () => {
-    fetch("/api/reset", { method: "POST" }).catch(() => {});
-    this.setState(s => ({
-      messages: CHANNELS.reduce((acc, c) => {
-        acc[c.key] = c.key === "general" ? [this._greeting(s.botName)] : [];
-        return acc;
-      }, {})
-    }));
+    Promise.all(CHANNELS.map(c => this._resetChannel(c.key))).then(this._applyResets);
   };
 
   setProfile(patch) { this.setState(s => ({ profile: Object.assign({}, s.profile, patch) })); }
@@ -476,24 +486,27 @@ class Component extends DCLogic {
     const pr = st.profile;
     const chan = CHANNELS.find(c => c.key === st.active) || CHANNELS[0];
     const activeMessages = st.messages[st.active] || [];
-    const badge = m => (m.photo ? "" : (m.author || m.name || "?").slice(0, 1).toUpperCase());
+    const myUsername = st.account ? st.account.username : null;
+    const myHue = pr.hue != null ? pr.hue : hueForName(myUsername || "");
+    const badge = (name, photo) => (photo ? "" : (name || "?").slice(0, 1).toUpperCase());
 
     const members = [
-      { name: st.botName, isBot: true, hue: HUES.bot },
-      { name: pr.name || "guest", hue: pr.hue, photo: pr.photo }
+      { name: st.botName, isBot: true, hue: HUES.bot, photo: "" },
+      { name: myUsername || "…", hue: myHue, photo: pr.photo }
     ];
 
     const msgs = activeMessages.map((m, i) => {
       const prev = activeMessages[i - 1];
       const grouped = prev && prev.author === m.author && !prev.stats;
-      const live = !m.bot && m.author === pr.name;
-      const mm = live ? Object.assign({}, m, { hue: pr.hue, photo: pr.photo }) : m;
+      const isMe = !m.bot && m.author === myUsername;
+      const hue = m.bot ? HUES.bot : (isMe ? myHue : hueForName(m.author));
+      const photo = isMe ? pr.photo : "";
       return {
-        showAvatar: !grouped, isBot: !!m.bot, author: m.author, time: m.t, body: m.body,
-        badge: badge(mm), stats: m.stats || false, image: m.image || false,
+        showAvatar: !grouped, isBot: !!m.bot, author: m.author, time: formatTime(m.createdAt), body: m.body,
+        badge: badge(m.author, photo), stats: m.stats || false, image: m.image || false,
         imageStyle: m.image ? `background-image:url(${m.image});background-size:contain;background-repeat:no-repeat;background-position:left center;background-color:var(--color-bg);width:100%;max-width:420px;height:420px;border-radius:10px;margin-top:8px;border:1px solid var(--color-divider);` : undefined,
-        avatarStyle: this.avatarStyle(mm),
-        nameStyle: `font-family:var(--font-heading);font-weight:600;font-size:14px;color:oklch(0.82 0.05 ${mm.hue});`,
+        avatarStyle: this.avatarStyle(hue, photo),
+        nameStyle: `font-family:var(--font-heading);font-weight:600;font-size:14px;color:oklch(0.82 0.05 ${hue});`,
         rowStyle: `display:flex;gap:12px;padding:${grouped ? "1px" : "7px"} 12px 2px 8px;border-radius:8px;`
       };
     });
@@ -526,21 +539,24 @@ class Component extends DCLogic {
 
       channels: CHANNELS.map(c => ({
         name: c.name, live: c.botReplies,
-        select: () => this.setState({ active: c.key }),
+        select: () => {
+          this.setState({ active: c.key });
+          if (!st.loaded[c.key]) this.loadChannel(c.key);
+        },
         style: `display:flex;align-items:center;gap:8px;width:100%;text-align:left;border:0;cursor:pointer;font-size:14px;padding:6px 8px;border-radius:8px;background:${c.key === st.active ? "color-mix(in srgb, var(--color-accent) 15%, transparent)" : "transparent"};color:${c.key === st.active ? "var(--color-accent)" : "color-mix(in srgb, var(--color-text) 70%, transparent)"};`
       })),
 
       members: members.map(m => ({
-        name: m.name, isBot: !!m.isBot, badge: badge(m),
-        avatarStyle: this.avatarStyle(m, 22)
+        name: m.name, isBot: !!m.isBot, badge: badge(m.name, m.photo),
+        avatarStyle: this.avatarStyle(m.hue, m.photo, 22)
       })),
       botBadge: st.botName.slice(0, 1).toUpperCase(),
-      botAvatarStyle: this.avatarStyle({ author: st.botName, hue: HUES.bot }),
-      youName: pr.name || "guest",
-      youStatus: pr.status || "local guest",
-      youBadge: badge({ author: pr.name, photo: pr.photo }),
-      youAvatarStyle: this.avatarStyle({ author: pr.name, hue: pr.hue, photo: pr.photo }, 26),
-      bigAvatarStyle: this.avatarStyle({ author: pr.name, hue: pr.hue, photo: pr.photo }, 60),
+      botAvatarStyle: this.avatarStyle(HUES.bot, ""),
+      youName: myUsername || "…",
+      youStatus: "online",
+      youBadge: badge(myUsername, pr.photo),
+      youAvatarStyle: this.avatarStyle(myHue, pr.photo, 26),
+      bigAvatarStyle: this.avatarStyle(myHue, pr.photo, 60),
 
       resetConversation: this.resetConversation,
 
@@ -552,10 +568,6 @@ class Component extends DCLogic {
       openSettings: () => this.setState({ settingsOpen: true }),
       closeSettings: () => this.setState({ settingsOpen: false }),
       stop: e => e.stopPropagation(),
-      nameDraft: pr.name,
-      statusDraft: pr.status,
-      onName: e => this.setProfile({ name: e.target.value }),
-      onStatus: e => this.setProfile({ status: e.target.value }),
       pickPhoto: () => this._file && this._file.click(),
       clearPhoto: () => this.setProfile({ photo: "" }),
       onPhoto: this.onPhoto,
@@ -563,18 +575,12 @@ class Component extends DCLogic {
         pick: () => this.setProfile({ hue: h }),
         style: `width:28px;height:28px;border-radius:50%;cursor:pointer;background:oklch(0.5 0.09 ${h});border:2px solid ${pr.hue === h ? "var(--color-neutral-100)" : "transparent"};`
       })),
-      storageNote: `Profile and the last 200 messages per channel are kept in this browser. Conversation memory for #general lives on the local server.`,
+      storageNote: `Messages in every channel are shared and saved on the server -- everyone signed in sees the same conversation. Only your avatar photo/colour are kept in this browser, and only you see them.`,
       clearHistory: this.clearHistory,
       resetAll: () => {
-        try { localStorage.removeItem(KEY); } catch (e) {}
-        fetch("/api/reset", { method: "POST" }).catch(() => {});
-        this.setState(s => ({
-          messages: CHANNELS.reduce((acc, c) => {
-            acc[c.key] = c.key === "general" ? [this._greeting(s.botName)] : [];
-            return acc;
-          }, {}),
-          profile: { name: "guest", status: "", hue: HUES.you, photo: "" }
-        }));
+        try { localStorage.removeItem(PROFILE_KEY); } catch (e) {}
+        this.clearHistory();
+        this.setState({ profile: { hue: null, photo: "" } });
       },
 
       runtime: [

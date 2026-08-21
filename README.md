@@ -79,6 +79,20 @@ python webui_server.py
 Then open `http://127.0.0.1:8000` (`WEBUI_HOST` / `WEBUI_PORT` in
 `core/config.py` to change host/port).
 
+Real accounts, not a single local guest: `/login.html` requires signing in
+before reaching the chat (SQLite-backed, see `core/auth.py`), and every
+channel's messages are shared/persisted server-side (`core/chat_store.py`) —
+everyone who's signed in sees the same conversation, Discord-style, not a
+private per-browser one.
+
+**Deploying for multiple people (e.g. behind a NAS reverse proxy):**
+- Set `WEBUI_HOST=0.0.0.0` so it's reachable beyond localhost.
+- If a reverse proxy in front terminates HTTPS (recommended — passwords
+  shouldn't travel in plaintext to more than one person's browser), also set
+  `WEBUI_COOKIE_SECURE=true` so the session cookie is marked `Secure`.
+  Leave it unset for plain-HTTP/local-only setups, or the browser will
+  refuse to send the cookie back and login will silently break.
+
 ---
 
 ## Docker

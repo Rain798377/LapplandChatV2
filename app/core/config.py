@@ -110,24 +110,39 @@ MAX_MEMORY_TOKENS     = 4000
 
 # WebUI config -- this branch's interface to the bot is the local HTML/JS
 # client in WebUI/ (served + driven by webui_server.py) instead of Discord.
-# Both live/read from a single shared history+memory so nothing else here
-# (core/ai.py, core/memory.py) needed to change.
+# Multiple real accounts now use this (see WEBUI auth config below) -- the
+# bot-reply channel still shares one history+memory across everyone in it
+# (core/ai.py, core/memory.py unchanged), same as a real Discord channel
+# does; core/chat_store.py is what makes the *messages themselves* actually
+# shared across viewers, which core.ai.histories alone never did (that's
+# just the bot's own short-term context, never rendered to anyone).
 WEBUI_HOST      = os.environ.get("WEBUI_HOST", "127.0.0.1")
 WEBUI_PORT      = int(os.environ.get("WEBUI_PORT", "8000"))
 WEBUI_DIR       = "../WebUI"  # relative to cwd (app/), like the other *_FILE paths above
 # Negative sentinel so it can never collide with a real Discord channel
-# snowflake (always positive) -- every local web session shares one
-# conversation, keyed into the same core.ai.histories dict Discord uses.
+# snowflake (always positive) -- every web session shares one conversation,
+# keyed into the same core.ai.histories dict Discord uses.
 WEBUI_CHANNEL_ID = -1
+# The web UI's channels (see WebUI/index.html's own CHANNELS list, which
+# must stay in sync with this -- there's no single source of truth shared
+# between the JS and Python sides here, same pragmatic tradeoff as the rest
+# of this file's *_FILE path conventions). Only WEBUI_BOT_CHANNEL gets bot
+# replies; every channel's messages are shared/persisted the same way.
+WEBUI_CHANNELS     = ("general", "bug-reports", "feature-suggestions", "off-topic")
+WEBUI_BOT_CHANNEL  = "general"
 
 # WebUI auth config -- SQLite-backed accounts (see core/auth.py) behind
-# WebUI/login.html (Nocturne design). Sessions are a plain, non-Secure
-# cookie on purpose: this server listens on plain HTTP by default
-# (WEBUI_HOST=127.0.0.1), and a Secure cookie would make the browser refuse
-# to send it back over http, breaking login entirely.
-AUTH_DB_FILE                 = "data/webui_users.db"
-AUTH_SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60  # 30 days
-AUTH_MIN_PASSWORD_LENGTH     = 8
+# WebUI/login.html (Nocturne design), and shared chat storage (see
+# core/chat_store.py) in the same file. WEBUI_COOKIE_SECURE defaults to
+# unset/false for local dev (plain http on WEBUI_HOST=127.0.0.1, where a
+# Secure cookie would make the browser refuse to send it back at all) --
+# set WEBUI_COOKIE_SECURE=true when this sits behind a reverse proxy that
+# terminates HTTPS (the browser only ever sees https:// in that case, so
+# Secure is correct and expected there).
+WEBUI_DB_FILE                 = "data/webui.db"
+WEBUI_COOKIE_SECURE           = os.environ.get("WEBUI_COOKIE_SECURE", "false").lower() == "true"
+AUTH_SESSION_MAX_AGE_SECONDS  = 30 * 24 * 60 * 60  # 30 days
+AUTH_MIN_PASSWORD_LENGTH      = 8
 
 # Downloader config
 MAX_FILE_SIZE_MB      = 25
