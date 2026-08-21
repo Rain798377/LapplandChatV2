@@ -116,7 +116,7 @@ async def idle_chatter():
         # reset either way -- a failed attempt shouldn't retry every tick
         idle_last_posted[channel_id] = time.time()
 
-# ── Slash command: /imagine ───────────────────────────────────────────────────
+# ── Slash commands: /imagine (FLUX.1-schnell), /imagine_anime (Filigree-Anima) ──
 def render_progress_bar(step: int, total: int, length: int = 12) -> str:
     if not total:
         return "⬜" * length
@@ -124,28 +124,20 @@ def render_progress_bar(step: int, total: int, length: int = 12) -> str:
     return "⬜" * filled + "⬛" * (length - filled)
 
 
-@tree.command(name="imagine", description="Generate an image from a prompt")
-@app_commands.describe(
-    prompt="What do you want Lappland to draw?",
-    negative_prompt="What to avoid in the image (default: workflow's built-in negative prompt)",
-    width="Image width (default: workflow's built-in resolution)",
-    height="Image height (default: workflow's built-in resolution)",
-    steps="Sampling steps (default: workflow's built-in step count)",
-    cfg="Classifier-free guidance scale (default: workflow's built-in cfg)",
-    seed="Sampler seed, for reproducible results (default: random each time)",
-)
-@app_commands.allowed_installs(guilds=True, users=True)
-@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
-async def imagine_cmd(
+async def _run_imagine(
     interaction: discord.Interaction,
+    model: str,
     prompt: str,
-    negative_prompt: str = "",
-    width: int = None,
-    height: int = None,
-    steps: int = None,
-    cfg: float = None,
-    seed: int = None,
+    negative_prompt: str,
+    width: int,
+    height: int,
+    steps: int,
+    cfg: float,
+    seed: int,
 ):
+    """Shared by imagine_cmd (flux) and imagine_anime_cmd (anima) -- only the
+    backend differs, everything about defer/progress/attach/cleanup is the
+    same regardless of which one is generating."""
     await interaction.response.defer()
     await presence.set_activity("drawing something")
 
@@ -155,14 +147,17 @@ async def imagine_cmd(
         # message. The full prompt still goes to generate_image() untouched.
         display_prompt = prompt if len(prompt) <= 1000 else prompt[:1000] + "..."
 
-        # enqueue_generate_image() hands the job to a shared worker thread rather
-        # than running it here directly -- Modal's remote_gen() does blocking
-        # network I/O between yields even from an async caller, so this still
-        # has to be polled off-thread, but queueing also means concurrent
-        # /imagine calls line up behind one warm container instead of each
-        # spinning up their own (see core/imagegen.py's job-queue note).
+        # enqueue_generate_image() hands the job to model's own shared worker
+        # thread rather than running it here directly -- Modal's remote_gen()
+        # does blocking network I/O between yields even from an async caller,
+        # so this still has to be polled off-thread, but queueing also means
+        # concurrent /imagine calls to the SAME backend line up behind one
+        # warm container instead of each spinning up their own (see
+        # core/imagegen.py's job-queue note; a flux call and an anima call
+        # don't queue behind each other, since they're independent containers).
         update_queue, position = enqueue_generate_image(
-            prompt, negative_prompt=negative_prompt, width=width, height=height, steps=steps, cfg=cfg, seed=seed
+            prompt, negative_prompt=negative_prompt, width=width, height=height, steps=steps, cfg=cfg, seed=seed,
+            model=model,
         )
 
         if position > 0:
@@ -217,6 +212,56 @@ async def imagine_cmd(
             )
     finally:
         await presence.set_activity(None)
+
+
+@tree.command(name="imagine", description="Generate an image from a prompt (FLUX.1-schnell)")
+@app_commands.describe(
+    prompt="What do you want Lappland to draw?",
+    negative_prompt="What to avoid in the image (ignored -- FLUX.1-schnell is CFG-distilled and doesn't use one)",
+    width="Image width (default: workflow's built-in resolution)",
+    height="Image height (default: workflow's built-in resolution)",
+    steps="Sampling steps (default: 4 -- schnell's own distillation regime, more doesn't help)",
+    cfg="Classifier-free guidance scale (default: 1 -- schnell is distilled for this, raising it doesn't help)",
+    seed="Sampler seed, for reproducible results (default: random each time)",
+)
+@app_commands.allowed_installs(guilds=True, users=True)
+@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+async def imagine_cmd(
+    interaction: discord.Interaction,
+    prompt: str,
+    negative_prompt: str = "",
+    width: int = None,
+    height: int = None,
+    steps: int = None,
+    cfg: float = None,
+    seed: int = None,
+):
+    await _run_imagine(interaction, "flux", prompt, negative_prompt, width, height, steps, cfg, seed)
+
+
+@tree.command(name="imagine_anime", description="Generate an anime-style image from a prompt (Filigree-Anima)")
+@app_commands.describe(
+    prompt="What do you want Lappland to draw?",
+    negative_prompt="What to avoid in the image (default: workflow's built-in negative prompt)",
+    width="Image width (default: workflow's built-in resolution)",
+    height="Image height (default: workflow's built-in resolution)",
+    steps="Sampling steps (default: workflow's built-in step count)",
+    cfg="Classifier-free guidance scale (default: workflow's built-in cfg)",
+    seed="Sampler seed, for reproducible results (default: random each time)",
+)
+@app_commands.allowed_installs(guilds=True, users=True)
+@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+async def imagine_anime_cmd(
+    interaction: discord.Interaction,
+    prompt: str,
+    negative_prompt: str = "",
+    width: int = None,
+    height: int = None,
+    steps: int = None,
+    cfg: float = None,
+    seed: int = None,
+):
+    await _run_imagine(interaction, "anima", prompt, negative_prompt, width, height, steps, cfg, seed)
 
 # ── Events ────────────────────────────────────────────────────────────────────
 @bot.event

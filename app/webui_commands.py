@@ -18,7 +18,7 @@ skipped rather than silently missing):
                                           web UI has exactly one conversation
                                           and is always listening.
   - /quote, /random meme, "Make Quote" -- the chat can render images now
-                                          (see cmd_imagine below), but these
+                                          (see _run_imagine below), but these
                                           weren't asked for -- separate task.
   - /terminal                          -- arbitrary shell execution. Discord
                                           gates it to BOT_OWNER_ID; this
@@ -32,16 +32,19 @@ skipped rather than silently missing):
 Discord (guild-admin gated) -- ported here ungated, since the only person who
 can reach this server is whoever is running it on their own machine.
 
-A command handler normally returns a plain str reply. cmd_imagine is the one
-exception -- it returns {"text": ..., "image": "/images/<file>"} instead, so
-webui_server.py's dispatch accepts either shape rather than every handler
-needing to conform to a richer contract it doesn't use.
+A command handler normally returns a plain str reply. cmd_imagine and
+cmd_imagine_anime are the exception -- they return {"text": ...,
+"image": "/images/<file>"} instead, so webui_server.py's dispatch accepts
+either shape rather than every handler needing to conform to a richer
+contract it doesn't use. Both share _run_imagine(), which just picks the
+backend ("flux" or "anima") passed to core.imagegen.enqueue_generate_image().
 
-/imagine blocks the whole request until the image is done (or fails) instead
-of streaming live progress edits the way Discord's version does -- there's no
-progress channel back to the browser here, just one request/response. Given
-Modal's containers scale to zero after 5s idle (see modal_imagegen/README.md),
-a cold start can make this take 30-90s+; the chat's "thinking" indicator is
+/imagine and /imagine_anime each block the whole request until their image
+is done (or fails) instead of streaming live progress edits the way
+Discord's versions do -- there's no progress channel back to the browser
+here, just one request/response. Given Modal's containers scale to zero
+after 5s idle (see modal_imagegen/README.md and modal_flux/README.md), a
+cold start can make this take 30-90s+; the chat's "thinking" indicator is
 the only feedback for that whole span.
 """
 
@@ -74,7 +77,8 @@ def cmd_help(args: list[str], raw: str, req) -> str:
         "/ship <name1> <name2> -- compatibility rating",
         "/random number|coin|die|choice|word <...> -- random stuff",
         "/memory wipe|wipe-all|edit <notes>|view -- manage what the bot remembers about you",
-        "/imagine <prompt> -- generate an image (can take 30-90s+ on a cold start)",
+        "/imagine <prompt> -- generate an image with FLUX.1-schnell (can take 30-90s+ on a cold start)",
+        "/imagine_anime <prompt> -- generate an image with Filigree-Anima (same cold-start caveat)",
     ]
     return "\n".join(lines)
 
@@ -261,19 +265,20 @@ def cmd_memory(args: list[str], raw: str, req) -> str:
     return f"unknown /memory subcommand '{sub}' -- try /help"
 
 
-# ── /imagine ─────────────────────────────────────────────────────────────────
+# ── /imagine (flux), /imagine_anime (anima) ────────────────────────────────
 
-def cmd_imagine(args: list[str], raw: str, req) -> str | dict:
-    prompt = raw.strip()
+def _run_imagine(prompt: str, usage: str, model: str) -> str | dict:
+    """Shared by cmd_imagine (flux) and cmd_imagine_anime (anima) -- only the
+    backend differs; queueing/polling/response-shape is identical."""
     if not prompt:
-        return "usage: /imagine <prompt>"
+        return usage
 
-    # enqueue_generate_image() itself is non-blocking (hands the job to the
-    # shared worker thread and returns immediately) -- the blocking part is
-    # this while loop draining update_queue, which is fine here since the
-    # caller (webui_server.py) already runs this whole function via
-    # asyncio.to_thread, same as get_ai_response().
-    update_queue, position = enqueue_generate_image(prompt)
+    # enqueue_generate_image() itself is non-blocking (hands the job to that
+    # backend's own shared worker thread and returns immediately) -- the
+    # blocking part is this while loop draining update_queue, which is fine
+    # here since the caller (webui_server.py) already runs this whole
+    # function via asyncio.to_thread, same as get_ai_response().
+    update_queue, position = enqueue_generate_image(prompt, model=model)
     filepath = None
     error = None
     while True:
@@ -296,6 +301,14 @@ def cmd_imagine(args: list[str], raw: str, req) -> str | dict:
     return f"couldn't generate that image, sorry.{f' ({error})' if error else ''}"
 
 
+def cmd_imagine(args: list[str], raw: str, req) -> str | dict:
+    return _run_imagine(raw.strip(), "usage: /imagine <prompt>", "flux")
+
+
+def cmd_imagine_anime(args: list[str], raw: str, req) -> str | dict:
+    return _run_imagine(raw.strip(), "usage: /imagine_anime <prompt>", "anima")
+
+
 COMMANDS = {
     "help": cmd_help,
     "ping": cmd_ping,
@@ -311,4 +324,5 @@ COMMANDS = {
     "random": cmd_random,
     "memory": cmd_memory,
     "imagine": cmd_imagine,
+    "imagine_anime": cmd_imagine_anime,
 }

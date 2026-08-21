@@ -168,6 +168,15 @@ QWEN_VAE_PATH           = os.environ.get("QWEN_VAE_PATH", "models/qwen_image/qwe
 FLUX_MODAL_APP_NAME = "web-ui-flux-schnell-imagegen"
 FLUX_MODAL_CLS_NAME = "FluxImageGen"
 
+# core/imagegen.py's registry of image-gen backends: key -> (Modal app name,
+# Modal class name). "anima" is the default (see DEFAULT_BACKEND in
+# core/imagegen.py) -- /imagine_anime and /imagine on Discord, and
+# /imagine_anime and /imagine in the web UI, select between these by key.
+IMAGEGEN_BACKENDS = {
+    "anima": (MODAL_APP_NAME, MODAL_CLS_NAME),
+    "flux":  (FLUX_MODAL_APP_NAME, FLUX_MODAL_CLS_NAME),
+}
+
 
 SYSTEM_PROMPT = f"""you are {BOT_NAME}. you're chatting with someone in a chat app. be normal. short replies unless the question needs detail. no asterisks. don't mention being an AI. different people talk in the same conversation - pay attention to who said what and treat each person's messages in context of what THEY said, not the whole conversation. Do not be so formal, talk casually. You may use short terms such as lmao, lol, bruh, etc. Make sure it fits the tone of the conversation.
 
