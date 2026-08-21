@@ -147,7 +147,11 @@ GPU_WORKER_RETRY_COOLDOWN  = 120  # seconds to skip the worker after it's found 
 # workflow), which is the real source of truth for those and would drift out
 # of sync with a second hardcoded copy.
 ANIMA_MODEL_PATH = os.environ.get("ANIMA_MODEL_PATH", "models/anima/Filigree-Anima-v4.0.safetensors")
-MODAL_APP_NAME    = "anima-imagegen"
+# "web-ui-" prefixed on this branch so its deployed Modal app is a separate
+# container from the Discord bot's "anima-imagegen" (main branch) -- deploying
+# from here never overwrites/collides with that one, and `modal app list`
+# makes it obvious which is which.
+MODAL_APP_NAME    = "web-ui-anima-imagegen"
 MODAL_CLS_NAME    = "AnimaImageGen"
 
 QWEN_TEXT_ENCODER_PATH = os.environ.get("QWEN_TEXT_ENCODER_PATH", "models/qwen_image/qwen_3_06b_base.safetensors")
