@@ -64,6 +64,23 @@ python LapplandV2.py
 
 ---
 
+## Web UI (`web-ui` branch)
+
+On this branch, `WebUI/index.html` is a local chat client for the bot instead
+of Discord — same persona, memory, and Groq → Gemini → Cloudflare → Mistral →
+OpenRouter fallback chain, just driven from a browser instead of a Discord
+server. No `DISCORD_TOKEN` needed.
+
+```bash
+cd app
+python webui_server.py
+```
+
+Then open `http://127.0.0.1:8000` (`WEBUI_HOST` / `WEBUI_PORT` in
+`core/config.py` to change host/port).
+
+---
+
 ## Docker
 
 ```bash
