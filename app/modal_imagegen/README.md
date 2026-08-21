@@ -76,3 +76,9 @@ would generate the same image every time).
   that back-to-back requests almost always pay a full cold start (container
   boot + ComfyUI startup + model load onto the GPU, likely 30-90s+) instead
   of reusing a warm container.
+- Every generated image is screened by `CompVis/stable-diffusion-safety-checker`
+  before it's returned -- a flagged image is never written to disk or handed
+  back to the caller; the caller just sees an error instead. The checker's
+  weights are baked into the image at build time (no HF download at call
+  time), so this only adds one CLIP classification pass per image, not a
+  network round-trip.

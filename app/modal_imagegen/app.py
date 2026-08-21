@@ -19,6 +19,15 @@ change), the prompt text, and the seed; everything else in the template is
 used as exported. Re-export and overwrite that file to change sampling
 settings rather than hardcoding a second copy here.
 
+Every generated image is run through CompVis/stable-diffusion-safety-checker
+(the standard NSFW/CSAM screen Stable Diffusion pipelines have shipped with
+for years -- a CLIP image encoder compared against a fixed set of unsafe
+"concept" embeddings) before it's returned; a flagged image is never written
+to disk or handed back to the caller, just replaced with an error. The
+model's weights are baked into the image at build time (see the
+`run_commands` python snippet below) so this adds no network round-trip at
+call time, only the classification pass itself.
+
 ANIMA_MODEL_PATH / QWEN_TEXT_ENCODER_PATH / QWEN_VAE_PATH point at local
 files -- personal downloads, not a hosted model, so there's no API to call,
 just files to read. They get baked into the container image at deploy time
@@ -96,6 +105,12 @@ NODE_SAVE     = "46"     # Save Image
 
 REMOTE_TEMPLATE_PATH = f"{COMFYUI_DIR}/anima_workflow_template.json"
 
+# CompVis/stable-diffusion-safety-checker's weights, cached into the image at
+# build time (see the run_commands step below) -- SAFETY_CHECKER_ID is baked
+# in rather than read from core/config.py since it's a fixed, well-known
+# model id, not a deployment-specific setting.
+SAFETY_CHECKER_ID = "CompVis/stable-diffusion-safety-checker"
+
 app = modal.App(MODAL_APP_NAME)
 
 image = (
@@ -103,7 +118,14 @@ image = (
     .apt_install("git")
     .run_commands(f"git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git {COMFYUI_DIR}")
     .run_commands(f"pip install -r {COMFYUI_DIR}/requirements.txt")
-    .pip_install("requests", "websocket-client")
+    .pip_install("requests", "websocket-client", "diffusers", "transformers", "numpy", "pillow")
+    .run_commands(
+        "python -c \""
+        "from transformers import CLIPImageProcessor; "
+        "from diffusers.pipelines.stable_diffusion.safety_checker import StableDiffusionSafetyChecker; "
+        f"CLIPImageProcessor.from_pretrained('{SAFETY_CHECKER_ID}'); "
+        f"StableDiffusionSafetyChecker.from_pretrained('{SAFETY_CHECKER_ID}')\""
+    )
     .add_local_python_source("core", copy=True)
     .add_local_file(str(LOCAL_UNET), f"{COMFYUI_DIR}/models/diffusion_models/{LOCAL_UNET.name}", copy=True)
     .add_local_file(str(LOCAL_CLIP), f"{COMFYUI_DIR}/models/text_encoders/{LOCAL_CLIP.name}", copy=True)
@@ -119,6 +141,8 @@ class AnimaImageGen:
         import subprocess
 
         import requests
+        from diffusers.pipelines.stable_diffusion.safety_checker import StableDiffusionSafetyChecker
+        from transformers import CLIPImageProcessor
 
         with open(REMOTE_TEMPLATE_PATH) as f:
             self.template = json.load(f)
@@ -128,6 +152,14 @@ class AnimaImageGen:
         self.template[NODE_UNET]["inputs"]["unet_name"] = LOCAL_UNET.name
         self.template[NODE_CLIP]["inputs"]["clip_name"] = LOCAL_CLIP.name
         self.template[NODE_VAE]["inputs"]["vae_name"] = LOCAL_VAE.name
+
+        # Loaded once per warm container and reused across generate() calls,
+        # same as ComfyUI itself below -- weights are already cached in the
+        # image (see the run_commands step in `image` above), so this is a
+        # local read, not a download.
+        self.safety_feature_extractor = CLIPImageProcessor.from_pretrained(SAFETY_CHECKER_ID)
+        self.safety_checker = StableDiffusionSafetyChecker.from_pretrained(SAFETY_CHECKER_ID)
+        self.safety_checker.eval()
 
         self.session = requests.Session()
         self.proc = subprocess.Popen(
@@ -242,7 +274,28 @@ class AnimaImageGen:
             timeout=30,
         )
         resp.raise_for_status()
+
+        if self._is_nsfw(resp.content):
+            # Deliberately never yields the image bytes in this case -- the
+            # caller (core/imagegen.py) only sees an error, same as any other
+            # generation failure, so a flagged image is never written to
+            # data/images/ or handed back to whoever asked for it.
+            raise RuntimeError("flagged as NSFW by the safety filter")
+
         yield {"type": "done", "image": resp.content}
+
+    def _is_nsfw(self, image_bytes: bytes) -> bool:
+        import io
+
+        import numpy as np
+        from PIL import Image
+
+        pil_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        np_image = np.array(pil_image).astype("float32") / 255.0
+        clip_input = self.safety_feature_extractor(pil_image, return_tensors="pt").pixel_values
+
+        _, has_nsfw_concept = self.safety_checker(images=[np_image], clip_input=clip_input)
+        return bool(has_nsfw_concept[0])
 
 
 @app.local_entrypoint()
