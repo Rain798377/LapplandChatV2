@@ -141,6 +141,25 @@ MODAL_CLS_NAME    = "AnimaImageGen"
 QWEN_TEXT_ENCODER_PATH = os.environ.get("QWEN_TEXT_ENCODER_PATH", "models/qwen_image/qwen_3_06b_base.safetensors")
 QWEN_VAE_PATH           = os.environ.get("QWEN_VAE_PATH", "models/qwen_image/qwen_image_vae.safetensors")
 
+# Second image-gen backend, alongside Anima -- black-forest-labs/FLUX.1-schnell,
+# also run via a real ComfyUI instance inside a Modal container (see
+# modal_flux/app.py + README.md). Unlike Anima (a personal checkpoint that
+# lives on local disk and gets baked into the image at deploy time), FLUX's
+# weights are a public HF Hub download fetched straight into a modal.Volume
+# (see modal_flux/app.py's download_weights()) -- there's no local file path
+# to configure here, just the app/class names core/imagegen.py needs to find
+# the deployed container by, same as MODAL_APP_NAME/MODAL_CLS_NAME above.
+FLUX_MODAL_APP_NAME = "flux-schnell-imagegen"
+FLUX_MODAL_CLS_NAME = "FluxImageGen"
+
+# core/imagegen.py's registry of image-gen backends: key -> (Modal app name,
+# Modal class name). "anima" is the default (see DEFAULT_BACKEND in
+# core/imagegen.py) -- /imagine_anime and /imagine select between these by key.
+IMAGEGEN_BACKENDS = {
+    "anima": (MODAL_APP_NAME, MODAL_CLS_NAME),
+    "flux":  (FLUX_MODAL_APP_NAME, FLUX_MODAL_CLS_NAME),
+}
+
 
 SYSTEM_PROMPT = f"""you are {BOT_NAME}. you're in a discord server. be normal. short replies unless the question needs detail. no asterisks. don't mention being an AI. different people talk in the same channel - pay attention to who said what and treat each person's messages in context of what THEY said, not the whole conversation. Do not be so formal, talk casually. You may use short terms such as lmao, lol, bruh, etc. Make sure it fits the tone of the conversation.
 
