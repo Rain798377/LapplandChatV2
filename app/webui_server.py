@@ -31,8 +31,14 @@ Endpoints:
                              value in the body is ignored
     POST /api/reset       -- {"channel"} -> clears that channel's persisted
                              messages (and, for the bot channel, its LLM
-                             history+re-seeds a greeting) -- requires a session
-    POST /api/register    -- {"identifier"?, "username"?, "email"?, "password"} -> {"pending": true, "user_id"}
+                             history+re-seeds a greeting) -- admin only (403
+                             otherwise; see core/auth.py's is_admin())
+    POST /api/register    -- {"identifier"?, "username"?, "email"?, "password"} ->
+                             {"pending": true, "user_id", "isAdmin"} -- isAdmin
+                             is true iff this matched the configured
+                             ADMIN_USERNAME/ADMIN_EMAIL/ADMIN_PASSWORD in
+                             core/config.py, which also assigns ADMIN_USER_ID
+                             instead of a random one
     POST /api/login        -- same body shape -> {"user_id", "username"}; sets an
                              HttpOnly `session` cookie (see core/auth.py)
     POST /api/logout       -- clears the current session
@@ -258,6 +264,9 @@ async def chat(req: ChatRequest, user=Depends(require_user)):
 
 @app.post("/api/reset")
 async def reset(req: ResetRequest, user=Depends(require_user)):
+    if not auth.is_admin(user):
+        raise HTTPException(status_code=403, detail="Only the admin account can reset a channel.")
+
     channel = req.channel if req.channel in WEBUI_CHANNELS else WEBUI_BOT_CHANNEL
     await asyncio.to_thread(chat_store.clear_channel, channel)
 
@@ -282,11 +291,15 @@ async def register(req: AuthRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    print(f"{LIGHT_GREEN}[auth] registered {username} ({user_id}){RESET}", flush=True)
+    is_admin = auth.is_admin({"user_id": user_id})
+    print(
+        f"{LIGHT_GREEN}[auth] registered {username} ({user_id}){' -- admin' if is_admin else ''}{RESET}",
+        flush=True,
+    )
     # {"pending": true} rather than logging them in immediately -- matches
     # login.html's own onSubmit, which on this response switches to login
     # mode with a "sign in now" notice instead of redirecting.
-    return {"pending": True, "user_id": user_id, "username": username}
+    return {"pending": True, "user_id": user_id, "username": username, "isAdmin": is_admin}
 
 
 @app.post("/api/login")
@@ -302,7 +315,7 @@ async def login_route(req: AuthRequest, response: Response):
         httponly=True, samesite="lax", secure=WEBUI_COOKIE_SECURE,
         max_age=AUTH_SESSION_MAX_AGE_SECONDS,
     )
-    return {"user_id": user["user_id"], "username": user["username"]}
+    return {"user_id": user["user_id"], "username": user["username"], "isAdmin": auth.is_admin(user)}
 
 
 @app.post("/api/logout")
@@ -320,7 +333,7 @@ async def me(request: Request):
     user = await asyncio.to_thread(auth.get_user_by_session, token) if token else None
     if not user:
         raise HTTPException(status_code=401, detail="not signed in")
-    return {"user_id": user["user_id"], "username": user["username"]}
+    return {"user_id": user["user_id"], "username": user["username"], "isAdmin": auth.is_admin(user)}
 
 
 if __name__ == "__main__":

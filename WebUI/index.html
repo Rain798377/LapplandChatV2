@@ -59,7 +59,9 @@
         </sc-for>
       </div>
 
-      <button onClick="{{ resetConversation }}" class="btn btn-secondary" style="justify-content: flex-start; width: 100%; font-size: 13px;">{{ resetLabel }}</button>
+      <sc-if value="{{ isAdmin }}" hint-placeholder-val="{{ false }}">
+        <button onClick="{{ resetConversation }}" class="btn btn-secondary" style="justify-content: flex-start; width: 100%; font-size: 13px;">{{ resetLabel }}</button>
+      </sc-if>
     </div>
 
     <button onClick="{{ openSettings }}" style="display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; border: 0; border-top: 1px solid var(--color-divider); background: transparent; cursor: pointer; padding: 11px;" style-hover="background: color-mix(in srgb, var(--color-text) 7%, transparent);">
@@ -189,7 +191,12 @@
             <section style="display: flex; flex-direction: column; gap: 10px;">
               <div style="font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--color-accent);">Account</div>
               <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
-                <span style="font-size: 13px; color: var(--color-text);">Signed in as {{ accountUsername }}</span>
+                <span style="display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--color-text);">
+                  Signed in as {{ accountUsername }}
+                  <sc-if value="{{ isAdmin }}" hint-placeholder-val="{{ false }}">
+                    <span class="tag tag-accent" style="font-size: 9px; letter-spacing: 0.06em; padding: 2px 6px;">ADMIN</span>
+                  </sc-if>
+                </span>
                 <button onClick="{{ logout }}" class="btn btn-ghost" style="font-size: 12.5px; color: color-mix(in srgb, var(--color-text) 65%, transparent);">Log out</button>
               </div>
             </section>
@@ -223,7 +230,9 @@
             <div style="font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--color-accent);">Stored data</div>
             <div style="font-size: 13px; color: color-mix(in srgb, var(--color-text) 65%, transparent);">{{ storageNote }}</div>
             <div style="display: flex; gap: 8px;">
-              <button onClick="{{ clearHistory }}" class="btn btn-secondary" style="font-size: 12.5px;">Clear chat history</button>
+              <sc-if value="{{ isAdmin }}" hint-placeholder-val="{{ false }}">
+                <button onClick="{{ clearHistory }}" class="btn btn-secondary" style="font-size: 12.5px;">Clear chat history</button>
+              </sc-if>
               <button onClick="{{ resetAll }}" class="btn btn-ghost" style="font-size: 12.5px; color: color-mix(in srgb, var(--color-text) 65%, transparent);">Reset everything</button>
             </div>
           </section>
@@ -299,7 +308,7 @@ class Component extends DCLogic {
     fetch("/api/me")
       .then(res => { if (!res.ok) throw new Error("unauthenticated"); return res.json(); })
       .then(data => {
-        this.setState({ account: { userId: data.user_id, username: data.username } });
+        this.setState({ account: { userId: data.user_id, username: data.username, isAdmin: !!data.isAdmin } });
         this.refreshInfo();
         this.loadChannel(this.state.active);
         this._poll = setInterval(this.pollActive, POLL_MS);
@@ -447,14 +456,16 @@ class Component extends DCLogic {
 
   // Sidebar "Reset #<channel>" -- clears only the active channel, for
   // everyone (this is a shared table now, not a per-browser one -- see
-  // core/chat_store.py). No per-user permission tier exists yet, so any
-  // signed-in account can do this to any channel.
+  // core/chat_store.py). Admin-only server-side (403 otherwise, see
+  // webui_server.py's /api/reset) -- the button itself is only rendered for
+  // admins (see the `isAdmin` sc-if in the template) so this never actually
+  // gets called by anyone it would 403 for.
   resetConversation = () => {
     this._resetChannel(this.state.active).then(r => this._applyResets([r]));
   };
 
   // Settings "Clear chat history" -- clears every channel, unlike the
-  // sidebar's per-channel reset above.
+  // sidebar's per-channel reset above. Same admin-only gating.
   clearHistory = () => {
     Promise.all(CHANNELS.map(c => this._resetChannel(c.key))).then(this._applyResets);
   };
@@ -562,6 +573,7 @@ class Component extends DCLogic {
 
       account: !!st.account,
       accountUsername: st.account ? st.account.username : "",
+      isAdmin: !!(st.account && st.account.isAdmin),
       logout: this.logout,
 
       settingsOpen: st.settingsOpen,
@@ -575,11 +587,13 @@ class Component extends DCLogic {
         pick: () => this.setProfile({ hue: h }),
         style: `width:28px;height:28px;border-radius:50%;cursor:pointer;background:oklch(0.5 0.09 ${h});border:2px solid ${pr.hue === h ? "var(--color-neutral-100)" : "transparent"};`
       })),
-      storageNote: `Messages in every channel are shared and saved on the server -- everyone signed in sees the same conversation. Only your avatar photo/colour are kept in this browser, and only you see them.`,
+      storageNote: st.account && st.account.isAdmin
+        ? `Messages in every channel are shared and saved on the server -- everyone signed in sees the same conversation. Only your avatar photo/colour are kept in this browser. You're admin, so the buttons below wipe the shared channels for everyone.`
+        : `Messages in every channel are shared and saved on the server -- everyone signed in sees the same conversation. Only your avatar photo/colour are kept in this browser, and only you see them. Wiping shared channels is admin-only.`,
       clearHistory: this.clearHistory,
       resetAll: () => {
         try { localStorage.removeItem(PROFILE_KEY); } catch (e) {}
-        this.clearHistory();
+        if (st.account && st.account.isAdmin) this.clearHistory();
         this.setState({ profile: { hue: null, photo: "" } });
       },
 

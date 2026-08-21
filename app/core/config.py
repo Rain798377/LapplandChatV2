@@ -144,6 +144,21 @@ WEBUI_COOKIE_SECURE           = os.environ.get("WEBUI_COOKIE_SECURE", "false").l
 AUTH_SESSION_MAX_AGE_SECONDS  = 30 * 24 * 60 * 60  # 30 days
 AUTH_MIN_PASSWORD_LENGTH      = 8
 
+# The admin account -- registering with this exact username-or-email plus
+# this exact password (see core/auth.py's create_user()) gets ADMIN_USER_ID
+# instead of a random uuid4, marking that one account as admin
+# (core/auth.py's is_admin()). Real credentials, so these
+# are read from the environment like every other secret in this file, never
+# hardcoded here -- add ADMIN_USERNAME / ADMIN_EMAIL / ADMIN_PASSWORD to
+# .env yourself to provision one; leaving any of the three unset disables
+# admin signup entirely (no account can ever match). Admin-gated actions
+# (channel wipe/reset -- see webui_server.py's /api/reset) 403 for anyone
+# whose user_id isn't this.
+ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME")
+ADMIN_EMAIL    = os.environ.get("ADMIN_EMAIL")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
+ADMIN_USER_ID  = "1337"
+
 # Downloader config
 MAX_FILE_SIZE_MB      = 25
 NORMALIZE_AUDIO       = False

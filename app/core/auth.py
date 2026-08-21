@@ -28,7 +28,7 @@ import sqlite3
 import uuid
 from datetime import datetime, timezone
 
-from core.config import WEBUI_DB_FILE
+from core.config import ADMIN_EMAIL, ADMIN_PASSWORD, ADMIN_USER_ID, ADMIN_USERNAME, WEBUI_DB_FILE
 
 _HASH_ALGO = "pbkdf2_sha256"
 _HASH_ITERATIONS = 260_000
@@ -40,6 +40,24 @@ class UsernameTakenError(ValueError):
 
 class EmailTakenError(ValueError):
     """Raised by create_user() when the email is already registered."""
+
+
+def _matches_admin(username: str | None, email: str | None, password: str) -> bool:
+    """True if this registration is the configured admin account -- the
+    username-or-email given matches ADMIN_USERNAME/ADMIN_EMAIL and the
+    password matches ADMIN_PASSWORD exactly. All three ADMIN_* env vars must
+    be set or this can never match (see core/config.py)."""
+    if not (ADMIN_USERNAME and ADMIN_EMAIL and ADMIN_PASSWORD):
+        return False
+    identifier_matches = (
+        (username is not None and username.lower() == ADMIN_USERNAME.lower())
+        or (email is not None and email.lower() == ADMIN_EMAIL.lower())
+    )
+    return identifier_matches and secrets.compare_digest(password, ADMIN_PASSWORD)
+
+
+def is_admin(user: sqlite3.Row | dict) -> bool:
+    return user["user_id"] == ADMIN_USER_ID
 
 
 def _connect() -> sqlite3.Connection:
@@ -122,7 +140,7 @@ def create_user(username: str | None, password: str, email: str | None = None) -
                 raise ValueError("username or email is required")
             username = _username_from_email(conn, email)
 
-        user_id = uuid.uuid4().hex
+        user_id = ADMIN_USER_ID if _matches_admin(username, email, password) else uuid.uuid4().hex
         password_hash = hash_password(password)
         try:
             conn.execute(
