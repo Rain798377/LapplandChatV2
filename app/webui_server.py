@@ -10,6 +10,12 @@ not duplicated, so persona/mood/memory behave identically either way.
 Endpoints:
     GET  /              -- the chat client (WebUI/index.html)
     GET  /support.js     -- the client's runtime (WebUI/support.js)
+    GET  /login.html     -- sign-in page (WebUI/login.html, Nocturne design
+                             system -- see WebUI/nocturne.css). Frontend only
+                             for now: it posts to /api/login and /api/register,
+                             neither of which exist here yet -- no backend
+                             auth wired up, on purpose, until that's asked for.
+    GET  /nocturne.css   -- login.html's stylesheet
     GET  /images/{file}  -- a generated image (core.imagegen.IMAGES_DIR)
     GET  /api/info       -- bot name, model, mood, provider chain, last
                              provider that actually served a reply
@@ -64,6 +70,16 @@ def index():
 @app.get("/support.js")
 def support_js():
     return FileResponse(f"{WEBUI_DIR}/support.js", media_type="application/javascript")
+
+
+@app.get("/login.html")
+def login():
+    return FileResponse(f"{WEBUI_DIR}/login.html")
+
+
+@app.get("/nocturne.css")
+def nocturne_css():
+    return FileResponse(f"{WEBUI_DIR}/nocturne.css", media_type="text/css")
 
 
 @app.get("/images/{filename}")
