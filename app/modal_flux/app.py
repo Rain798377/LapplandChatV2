@@ -15,22 +15,22 @@ from the Hub into Modal (datacenter-to-datacenter), and FluxImageGen.load()
 symlinks whatever's in the volume into ComfyUI's expected model folders at
 container start.
 
-Only two files are fetched -- black-forest-labs/FLUX.1-schnell ships both a
-diffusers-format layout (transformer/, vae/, text_encoder/, text_encoder_2/,
-tokenizer*/, scheduler/, model_index.json) AND the single-file checkpoints
-ComfyUI actually loads, sitting at the repo root:
+Only two files are fetched from FLUX_REPO_ID -- black-forest-labs/FLUX.1-schnell
+ships both a diffusers-format layout (transformer/, vae/, text_encoder/,
+text_encoder_2/, tokenizer*/, scheduler/, model_index.json) AND the
+single-file checkpoints ComfyUI actually loads, sitting at the repo root:
     flux1-schnell.safetensors  -- the 12B transformer/UNet
     ae.safetensors             -- the VAE
 FLUX_FILES below is exactly those two, not the whole repo.
 
-Text encoders (CLIP-L, T5-XXL) are NOT fetched here and are a real gap --
-this repo's text_encoder*/ folders are diffusers-sharded, not the
-single-file format ComfyUI's DualCLIPLoader wants. The community-standard
-ComfyUI-ready versions live in a different repo, comfyanonymous/flux_text_
-encoders (clip_l.safetensors + a t5xxl_*.safetensors variant); not fetched
-here since only black-forest-labs/FLUX.1-schnell was asked for. generate()
-below will fail at the DualCLIPLoader step until those two files also exist
-under {VOLUME_MOUNT} -- see README.md.
+Text encoders (CLIP-L, T5-XXL) come from a second repo, TEXT_ENCODER_REPO_ID
+(comfyanonymous/flux_text_encoders -- the ComfyUI creator's own repo hosting
+DualCLIPLoader-ready single files) rather than FLUX_REPO_ID's own
+text_encoder*/ folders, which are diffusers-sharded, not the single-file
+format ComfyUI wants. Unlike FLUX_REPO_ID, this one isn't gated -- no
+HF_TOKEN access-approval needed for it specifically, though download_weights()
+uses the same secret for both since it's harmless to send on an ungated repo
+too.
 
 workflow_template.json here is hand-authored from ComfyUI's well-documented
 official FLUX.1-schnell example graph (UNETLoader -> DualCLIPLoader ->
@@ -70,6 +70,15 @@ FLUX_REPO_ID = "black-forest-labs/FLUX.1-schnell"
 # model_index.json) is skipped.
 FLUX_FILES = ("flux1-schnell.safetensors", "ae.safetensors")
 UNET_FILENAME, VAE_FILENAME = FLUX_FILES
+
+# CLIP-L / T5-XXL text encoders -- not part of black-forest-labs/FLUX.1-schnell
+# in single-file form (see module docstring). comfyanonymous/flux_text_encoders
+# is the ComfyUI creator's own repo hosting exactly the DualCLIPLoader-ready
+# files; unlike FLUX_REPO_ID, it isn't gated, no HF_TOKEN access-approval
+# needed for this one.
+TEXT_ENCODER_REPO_ID = "comfyanonymous/flux_text_encoders"
+TEXT_ENCODER_FILES = ("clip_l.safetensors", "t5xxl_fp8_e4m3fn.safetensors")
+CLIP_L_FILENAME, T5XXL_FILENAME = TEXT_ENCODER_FILES
 
 COMFYUI_DIR = "/root/ComfyUI"
 VOLUME_MOUNT = "/vol/flux"
@@ -149,18 +158,20 @@ image = (
 )
 def download_weights():
     """
-    Fetches FLUX_FILES from FLUX_REPO_ID straight into the Modal volume --
-    Hub to Modal, never routed through local disk. Safe to re-run: `hf
-    download` resumes/skips files it already has instead of starting over.
+    Fetches FLUX_FILES from FLUX_REPO_ID and TEXT_ENCODER_FILES from
+    TEXT_ENCODER_REPO_ID straight into the Modal volume -- Hub to Modal,
+    never routed through local disk. Safe to re-run: `hf download`
+    resumes/skips files it already has instead of starting over.
     """
     import subprocess
 
-    subprocess.run(
-        ["hf", "download", FLUX_REPO_ID, *FLUX_FILES, "--local-dir", VOLUME_MOUNT],
-        check=True,
-    )
+    for repo_id, files in ((FLUX_REPO_ID, FLUX_FILES), (TEXT_ENCODER_REPO_ID, TEXT_ENCODER_FILES)):
+        subprocess.run(
+            ["hf", "download", repo_id, *files, "--local-dir", VOLUME_MOUNT],
+            check=True,
+        )
+        print(f"downloaded {files} from {repo_id} into {VOLUME_MOUNT}")
     flux_volume.commit()
-    print(f"downloaded {FLUX_FILES} from {FLUX_REPO_ID} into {VOLUME_MOUNT}")
 
 
 GPU_TYPE = "A100-40GB"
@@ -180,16 +191,15 @@ class FluxImageGen:
         with open(f"{COMFYUI_DIR}/flux_workflow_template.json") as f:
             self.template = json.load(f)
 
-        # Symlink whatever's in the volume into ComfyUI's expected model
-        # folders -- not baked into the image (see module docstring), so
-        # this runs at every container start instead of once at build time.
-        # Deliberately not limited to just UNET_FILENAME/VAE_FILENAME: once
-        # text encoders are added to the volume (see module docstring), this
-        # picks them up with no code change, since it just mirrors whatever
-        # download_weights() has put there.
+        # Symlink whatever download_weights() put in the volume into
+        # ComfyUI's expected model folders -- not baked into the image (see
+        # module docstring), so this runs at every container start instead
+        # of once at build time.
         dest_by_name = {
             UNET_FILENAME: f"{COMFYUI_DIR}/models/diffusion_models/{UNET_FILENAME}",
             VAE_FILENAME: f"{COMFYUI_DIR}/models/vae/{VAE_FILENAME}",
+            CLIP_L_FILENAME: f"{COMFYUI_DIR}/models/text_encoders/{CLIP_L_FILENAME}",
+            T5XXL_FILENAME: f"{COMFYUI_DIR}/models/text_encoders/{T5XXL_FILENAME}",
         }
         for filename, dst in dest_by_name.items():
             src = f"{VOLUME_MOUNT}/{filename}"
@@ -204,6 +214,8 @@ class FluxImageGen:
 
         self.template[NODE_UNET]["inputs"]["unet_name"] = UNET_FILENAME
         self.template[NODE_VAE]["inputs"]["vae_name"] = VAE_FILENAME
+        self.template[NODE_CLIP]["inputs"]["clip_name1"] = CLIP_L_FILENAME
+        self.template[NODE_CLIP]["inputs"]["clip_name2"] = T5XXL_FILENAME
 
         self.safety_feature_extractor = CLIPImageProcessor.from_pretrained(SAFETY_CHECKER_ID)
         self.safety_checker = StableDiffusionSafetyChecker.from_pretrained(SAFETY_CHECKER_ID)

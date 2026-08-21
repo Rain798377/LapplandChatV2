@@ -22,15 +22,25 @@ reason. Instead its weights live in a `modal.Volume` named
 *inside* Modal -- Hub to Modal, datacenter-to-datacenter, never touching
 local disk.
 
-**Only two files are fetched**, not the whole repo:
+**Only the ComfyUI-loadable files are fetched**, not either repo in full:
+
+From `black-forest-labs/FLUX.1-schnell`:
 ```
 flux1-schnell.safetensors   # the 12B transformer/UNet
 ae.safetensors               # the VAE
 ```
-`black-forest-labs/FLUX.1-schnell` ships these at the repo root *and* ships
-a second, separate diffusers-format layout (`transformer/`, `vae/`,
-`text_encoder/`, `text_encoder_2/`, `tokenizer*/`, `scheduler/`,
-`model_index.json`) that ComfyUI doesn't load and this setup never touches.
+That repo ships these at the repo root *and* ships a second, separate
+diffusers-format layout (`transformer/`, `vae/`, `text_encoder/`,
+`text_encoder_2/`, `tokenizer*/`, `scheduler/`, `model_index.json`) that
+ComfyUI doesn't load and this setup never touches.
+
+From `comfyanonymous/flux_text_encoders` (the ComfyUI creator's own repo,
+hosting the single-file DualCLIPLoader-ready versions -- FLUX.1-schnell's
+own `text_encoder*/` folders are diffusers-sharded, not this format):
+```
+clip_l.safetensors
+t5xxl_fp8_e4m3fn.safetensors
+```
 
 ## Setup
 
@@ -38,16 +48,18 @@ a second, separate diffusers-format layout (`transformer/`, `vae/`,
    authenticate, if not already done.
 2. black-forest-labs gates every repo behind a click-through access approval
    even under an open license (FLUX.1-schnell is Apache-2.0, but still
-   gated) -- accept the terms at
-   https://huggingface.co/black-forest-labs/FLUX.1-schnell with the HF
+   gated -- `comfyanonymous/flux_text_encoders` is not) -- accept the terms
+   at https://huggingface.co/black-forest-labs/FLUX.1-schnell with the HF
    account whose token you'll use, then create a Modal secret from that
    account's token:
    ```
    modal secret create huggingface-secret HF_TOKEN=hf_...
    ```
-   `download_weights()` reads this secret; `hf download` picks up `HF_TOKEN`
+   `download_weights()` reads this secret for both repos' downloads (sent
+   even to the ungated one -- harmless, and one secret is simpler than
+   conditionally attaching it per repo); `hf download` picks up `HF_TOKEN`
    from the environment automatically, no other config needed.
-3. Fetch the weights into the volume (one-time, or whenever you want to
+3. Fetch all four files into the volume (one-time, or whenever you want to
    force a re-check):
    ```
    modal run app/modal_flux/app.py::download_weights
@@ -57,30 +69,6 @@ a second, separate diffusers-format layout (`transformer/`, `vae/`,
    ```
    modal deploy app/modal_flux/app.py
    ```
-
-## The text-encoder gap
-
-FLUX needs a CLIP-L and a T5-XXL text encoder to run at all, and this setup
-does **not** fetch them. `black-forest-labs/FLUX.1-schnell`'s own
-`text_encoder/`/`text_encoder_2/` folders are diffusers-sharded, not the
-single-file format ComfyUI's `DualCLIPLoader` node expects --
-`workflow_template.json` here references `clip_l.safetensors` and
-`t5xxl_fp8_e4m3fn.safetensors`, the filenames the ComfyUI-community-standard
-versions use (commonly sourced from `comfyanonymous/flux_text_encoders` on
-the Hub). Until those two files also exist under the volume's
-`/vol/flux/`, `FluxImageGen.generate()` will fail at the `DualCLIPLoader`
-step -- everything else (ComfyUI boot, the UNet/VAE symlinking, the safety
-checker) works without them, generation itself doesn't.
-
-To add them once you've picked a source:
-```
-modal run app/modal_flux/app.py::download_weights   # or a small variant
-                                                       # pointed at the
-                                                       # encoder repo/files
-```
-`FluxImageGen.load()` symlinks *whatever's* present in the volume into
-ComfyUI's model folders, keyed by filename -- no code change needed once
-those two files land there under the names above.
 
 ## workflow_template.json: hand-authored, not exported
 
