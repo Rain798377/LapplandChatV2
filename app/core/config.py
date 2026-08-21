@@ -120,6 +120,15 @@ WEBUI_DIR       = "../WebUI"  # relative to cwd (app/), like the other *_FILE pa
 # conversation, keyed into the same core.ai.histories dict Discord uses.
 WEBUI_CHANNEL_ID = -1
 
+# WebUI auth config -- SQLite-backed accounts (see core/auth.py) behind
+# WebUI/login.html (Nocturne design). Sessions are a plain, non-Secure
+# cookie on purpose: this server listens on plain HTTP by default
+# (WEBUI_HOST=127.0.0.1), and a Secure cookie would make the browser refuse
+# to send it back over http, breaking login entirely.
+AUTH_DB_FILE                 = "data/webui_users.db"
+AUTH_SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60  # 30 days
+AUTH_MIN_PASSWORD_LENGTH     = 8
+
 # Downloader config
 MAX_FILE_SIZE_MB      = 25
 NORMALIZE_AUDIO       = False

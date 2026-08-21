@@ -11,16 +11,24 @@ Endpoints:
     GET  /              -- the chat client (WebUI/index.html)
     GET  /support.js     -- the client's runtime (WebUI/support.js)
     GET  /login.html     -- sign-in page (WebUI/login.html, Nocturne design
-                             system -- see WebUI/nocturne.css). Frontend only
-                             for now: it posts to /api/login and /api/register,
-                             neither of which exist here yet -- no backend
-                             auth wired up, on purpose, until that's asked for.
-    GET  /nocturne.css   -- login.html's stylesheet
+                             system -- see WebUI/nocturne.css)
+    GET  /nocturne.css   -- login.html's/index.html's stylesheet
     GET  /images/{file}  -- a generated image (core.imagegen.IMAGES_DIR)
     GET  /api/info       -- bot name, model, mood, provider chain, last
                              provider that actually served a reply
     POST /api/chat        -- {"message", "username", "user_id"} -> {"reply", "mood", "provider", "isCommand", "image"}
     POST /api/reset       -- clears the local conversation history
+    POST /api/register    -- {"identifier"?, "username"?, "email"?, "password"} -> {"pending": true, "user_id"}
+    POST /api/login        -- same body shape -> {"user_id", "username"}; sets an
+                             HttpOnly `session` cookie (see core/auth.py)
+    POST /api/logout       -- clears the current session
+    GET  /api/me          -- the logged-in user (401 if no/invalid session) --
+                             index.html's own JS calls this on load and
+                             redirects to /login.html on 401; nothing here
+                             enforces it server-side beyond that one check,
+                             so hitting /api/chat directly without a session
+                             still works (this is a local personal tool, not
+                             a multi-tenant one -- see core/auth.py)
 
 A message starting with "/" is dispatched to webui_commands.COMMANDS (text
 equivalents of the bot's Discord slash commands -- see that module's
@@ -32,20 +40,24 @@ normally returns a plain str; /imagine returns {"text", "image"} instead
 relative ("/images/<file>"), or null.
 
 Run with `python webui_server.py` from the app/ directory (same as
-LapplandV2.py). Config: WEBUI_HOST / WEBUI_PORT / WEBUI_DIR in core/config.py.
+LapplandV2.py). Config: WEBUI_HOST / WEBUI_PORT / WEBUI_DIR / AUTH_* in
+core/config.py.
 """
 
 import asyncio
 import os
 import random
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from core import ai
+from core import ai, auth
 from core.ai import get_ai_response, histories
-from core.config import BOT_NAME, MODEL, WEBUI_CHANNEL_ID, WEBUI_DIR, WEBUI_HOST, WEBUI_PORT
+from core.config import (
+    AUTH_MIN_PASSWORD_LENGTH, AUTH_SESSION_MAX_AGE_SECONDS,
+    BOT_NAME, MODEL, WEBUI_CHANNEL_ID, WEBUI_DIR, WEBUI_HOST, WEBUI_PORT,
+)
 from core.colors import *
 from core.imagegen import IMAGES_DIR
 from core.llm import DEFAULT_PROVIDER_CHAIN, describe_error
@@ -54,12 +66,24 @@ from core.memory import load_memory, update_memory_from_conversation
 from webui_commands import COMMANDS
 
 app = FastAPI()
+auth.init_db()
 
 
 class ChatRequest(BaseModel):
     message: str
     username: str = "guest"
     user_id: str = "webui-guest"
+
+
+class AuthRequest(BaseModel):
+    # login.html sends all three every time (whichever of username/email
+    # apply to what was typed in its one "identifier" field) -- identifier is
+    # what /api/login looks a user up by; username/email are only meaningful
+    # to /api/register, which needs to know which one you actually gave it.
+    identifier: str
+    username: str | None = None
+    email: str | None = None
+    password: str
 
 
 @app.get("/")
@@ -159,6 +183,60 @@ async def chat(req: ChatRequest):
 def reset():
     histories.pop(WEBUI_CHANNEL_ID, None)
     return {"status": "ok"}
+
+
+@app.post("/api/register")
+async def register(req: AuthRequest):
+    if len(req.password) < AUTH_MIN_PASSWORD_LENGTH:
+        raise HTTPException(status_code=400, detail=f"Password must be at least {AUTH_MIN_PASSWORD_LENGTH} characters.")
+    try:
+        user_id, username = await asyncio.to_thread(auth.create_user, req.username, req.password, req.email)
+    except auth.UsernameTakenError:
+        raise HTTPException(status_code=409, detail="That username is already taken.")
+    except auth.EmailTakenError:
+        raise HTTPException(status_code=409, detail="An account with that email already exists.")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    print(f"{LIGHT_GREEN}[auth] registered {username} ({user_id}){RESET}", flush=True)
+    # {"pending": true} rather than logging them in immediately -- matches
+    # login.html's own onSubmit, which on this response switches to login
+    # mode with a "sign in now" notice instead of redirecting.
+    return {"pending": True, "user_id": user_id, "username": username}
+
+
+@app.post("/api/login")
+async def login_route(req: AuthRequest, response: Response):
+    identifier = req.identifier.strip()
+    user = await asyncio.to_thread(auth.get_user_by_identifier, identifier)
+    if not user or not await asyncio.to_thread(auth.verify_password, req.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Wrong username/email or password.")
+
+    token = await asyncio.to_thread(auth.create_session, user["user_id"])
+    response.set_cookie(
+        "session", token,
+        httponly=True, samesite="lax", secure=False,  # see core/config.py's AUTH_* comment for why secure=False
+        max_age=AUTH_SESSION_MAX_AGE_SECONDS,
+    )
+    return {"user_id": user["user_id"], "username": user["username"]}
+
+
+@app.post("/api/logout")
+async def logout(request: Request, response: Response):
+    token = request.cookies.get("session")
+    if token:
+        await asyncio.to_thread(auth.delete_session, token)
+    response.delete_cookie("session")
+    return {"status": "ok"}
+
+
+@app.get("/api/me")
+async def me(request: Request):
+    token = request.cookies.get("session")
+    user = await asyncio.to_thread(auth.get_user_by_session, token) if token else None
+    if not user:
+        raise HTTPException(status_code=401, detail="not signed in")
+    return {"user_id": user["user_id"], "username": user["username"]}
 
 
 if __name__ == "__main__":
