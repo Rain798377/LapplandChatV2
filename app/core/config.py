@@ -1,5 +1,12 @@
 import os
 
+from dotenv import load_dotenv
+
+# This deployment runs independently of the Discord bot (separate NAS
+# container, no shared process), so it reads its own env file instead of the
+# Discord bot's .env -- relative to cwd (app/), like WEBUI_DIR below.
+load_dotenv("../.env-webui")
+
 # Model config
 MODEL                 = "qwen/qwen3.6-27b"
 MOODS                 = ["chill", "playful", "sarcastic", "tired", "hyper", "annoyed"]
@@ -117,8 +124,8 @@ MAX_MEMORY_TOKENS     = 4000
 # shared across viewers, which core.ai.histories alone never did (that's
 # just the bot's own short-term context, never rendered to anyone).
 WEBUI_HOST      = os.environ.get("WEBUI_HOST", "127.0.0.1")
-WEBUI_PORT      = int(os.environ.get("WEBUI_PORT", "8000"))
-WEBUI_DIR       = "../WebUI"  # relative to cwd (app/), like the other *_FILE paths above
+WEBUI_PORT      = int(os.environ.get("WEBUI_PORT", "9021"))
+WEBUI_DIR       = "./WebUI"  # relative to cwd (app/), like the other *_FILE paths above
 # Negative sentinel so it can never collide with a real Discord channel
 # snowflake (always positive) -- every web session shares one conversation,
 # keyed into the same core.ai.histories dict Discord uses.

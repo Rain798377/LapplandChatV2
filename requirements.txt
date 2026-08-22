@@ -21,3 +21,4 @@ modal
 # both ranges already provide
 fastapi<0.104,>=0.103.0
 uvicorn<0.24,>=0.23.2
+python-dotenv

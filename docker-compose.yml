@@ -1,30 +1,15 @@
 services:
-  lappland:
+  webui:
     build: .
-    environment:
-      GROQ_API_KEY: REPLACE_WITH_YOUR_GROQ_API_KEY
-      DISCORD_TOKEN: REPLACE_WITH_YOUR_DISCORD_TOKEN
-      TTS_SERVER_URL: http://192.9.148.110:8000/tts
-      TTS_SERVER_TOKEN: REPLACE_WITH_YOUR_TTS_SERVER_TOKEN
-      STT_SERVER_URL: http://stt:8801
-      INTENT_SERVER_URL: http://intent:8803
-    container_name: lappland
+    command: ["python", "webui_server.py"]
+    container_name: lappland-webui
     restart: unless-stopped
-    depends_on:
-      - stt
-      - intent
+    ports:
+      - "9021:9021"
     volumes:
       - ./app:/app
       - ./data:/app/data
-
-  stt:
-    build: ./stt
-    container_name: lappland-stt
-    restart: unless-stopped
-
-  intent:
-    build: ./intent_server
-    container_name: lappland-intent
-    restart: unless-stopped
-    volumes:
-      - ./intent_server:/app
+      # Secrets/config come from .env-webui (config.py loads it directly),
+      # not this file -- keeps this deployment independent of the Discord
+      # bot's .env, which stays on the NAS but out of this container.
+      - ./.env-webui:/.env-webui
