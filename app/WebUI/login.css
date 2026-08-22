@@ -1,0 +1,22 @@
+html, body { margin: 0; padding: 0; height: 100%; }
+* { box-sizing: border-box; }
+a { color: var(--color-accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+@keyframes pop { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+body {
+  display: grid; place-items: center; padding: 24px;
+  background: radial-gradient(1200px 600px at 50% -10%, color-mix(in srgb, var(--color-accent) 12%, transparent), transparent 60%), var(--color-bg);
+  color: var(--color-text); font-family: var(--font-body); font-size: 15px;
+}
+.login-card { width: 100%; max-width: 380px; display: flex; flex-direction: column; gap: 22px; animation: pop 0.24s ease-out; }
+#error, #notice { font-size: 12.5px; border-radius: 8px; padding: 8px 11px; display: none; }
+#error { color: oklch(0.72 0.15 25); background: color-mix(in srgb, oklch(0.6 0.18 25) 14%, transparent); border: 1px solid color-mix(in srgb, oklch(0.6 0.18 25) 40%, transparent); }
+#notice { color: oklch(0.8 0.12 145); background: color-mix(in srgb, oklch(0.72 0.14 145) 12%, transparent); border: 1px solid color-mix(in srgb, oklch(0.72 0.14 145) 40%, transparent); }
+.checkbox-row {
+  display: flex; align-items: flex-start; gap: 9px; cursor: pointer;
+  font-size: 12.5px; line-height: 1.4;
+  color: color-mix(in srgb, var(--color-text) 70%, transparent);
+}
+.checkbox-row input[type="checkbox"] {
+  margin: 2px 0 0; flex: none; width: 15px; height: 15px; accent-color: var(--color-accent); cursor: pointer;
+}

@@ -47,9 +47,17 @@ def init_db() -> None:
                 body       TEXT NOT NULL,
                 image      TEXT,
                 stats      TEXT,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                edited     INTEGER NOT NULL DEFAULT 0
             )
         """)
+        # Older DBs (pre-edit/delete) won't have this column -- CREATE TABLE
+        # IF NOT EXISTS above only applies to brand-new files. Ignore the
+        # "duplicate column" error on every DB that already has it.
+        try:
+            conn.execute("ALTER TABLE messages ADD COLUMN edited INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
         # Every read here filters by channel and orders/paginates by id --
         # this is the one index that matters.
         conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_channel_id ON messages (channel, id)")
@@ -109,13 +117,43 @@ def clear_channel(channel: str) -> None:
         conn.close()
 
 
+def get_message(message_id: int) -> sqlite3.Row | None:
+    conn = _connect()
+    try:
+        return conn.execute("SELECT * FROM messages WHERE id = ?", (message_id,)).fetchone()
+    finally:
+        conn.close()
+
+
+def edit_message(message_id: int, body: str) -> sqlite3.Row | None:
+    conn = _connect()
+    try:
+        conn.execute("UPDATE messages SET body = ?, edited = 1 WHERE id = ?", (body, message_id))
+        conn.commit()
+        return conn.execute("SELECT * FROM messages WHERE id = ?", (message_id,)).fetchone()
+    finally:
+        conn.close()
+
+
+def delete_message(message_id: int) -> bool:
+    conn = _connect()
+    try:
+        cur = conn.execute("DELETE FROM messages WHERE id = ?", (message_id,))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
 def serialize(row: sqlite3.Row) -> dict:
     return {
         "id": row["id"],
         "author": row["username"],
         "bot": bool(row["is_bot"]),
+        "userId": row["user_id"],
         "body": row["body"],
         "image": row["image"],
         "stats": row["stats"],
         "createdAt": row["created_at"],
+        "edited": bool(row["edited"]),
     }

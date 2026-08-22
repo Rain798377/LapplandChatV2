@@ -5,70 +5,40 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 <title>Lappland</title>
-<script src="./support.js"></script>
+<link rel="stylesheet" href="./nocturne.css" />
+<link rel="stylesheet" href="./chat.css" />
 </head>
 <body>
-<x-dc>
-<helmet>
-<link rel="stylesheet" href="./nocturne.css" />
-<style>
-  html, body { margin: 0; padding: 0; background: var(--color-bg); }
-  * { box-sizing: border-box; }
-  a { color: var(--color-accent); text-decoration: none; }
-  a:hover { text-decoration: underline; }
-  .scroll::-webkit-scrollbar { width: 10px; }
-  .scroll::-webkit-scrollbar-thumb { background: var(--color-neutral-800); border: 3px solid transparent; background-clip: padding-box; border-radius: 10px; }
-  .scroll::-webkit-scrollbar-track { background: transparent; }
-  @keyframes blip { 0%, 60%, 100% { opacity: 0.25; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-3px); } }
-  @keyframes pop { from { opacity: 0; transform: translateY(6px) scale(0.99); } to { opacity: 1; transform: none; } }
-  textarea, input, select, button { font-family: inherit; }
-</style>
-</helmet>
-<div style="height: 100vh; display: flex; background: var(--color-bg); color: var(--color-text); font-family: var(--font-body); font-size: 15px; line-height: 1.55; overflow: hidden;">
+<div id="app" style="height: 100vh; background: var(--color-bg); color: var(--color-text); font-family: var(--font-body); font-size: 15px; line-height: 1.55; overflow: hidden;">
 
   <aside style="width: 224px; flex: none; display: flex; flex-direction: column; background: color-mix(in srgb, var(--color-bg) 78%, #000); border-right: 1px solid var(--color-divider);">
     <div style="padding: 18px 16px 14px; border-bottom: 1px solid var(--color-divider); display: flex; flex-direction: column; gap: 3px;">
-      <div style="font-family: var(--font-heading); font-size: 17px; font-weight: 600; color: var(--color-neutral-100); letter-spacing: -0.015em;">{{ botName }}</div>
-      <div style="font-size: 11px; color: color-mix(in srgb, var(--color-text) 45%, transparent);">{{ modelLabel }}</div>
+      <div id="botNameLabel" style="font-family: var(--font-heading); font-size: 17px; font-weight: 600; color: var(--color-neutral-100); letter-spacing: -0.015em;">Lappland</div>
+      <div id="modelLabel" style="font-size: 11px; color: color-mix(in srgb, var(--color-text) 45%, transparent);">…</div>
     </div>
 
     <div class="scroll" style="flex: 1; overflow-y: auto; padding: 16px 8px; display: flex; flex-direction: column; gap: 20px;">
       <div style="display: flex; flex-direction: column; gap: 2px;">
         <div style="font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: color-mix(in srgb, var(--color-text) 45%, transparent); padding: 0 8px 6px;">Channels</div>
-        <sc-for list="{{ channels }}" as="ch" hint-placeholder-count="4">
-          <button onClick="{{ ch.select }}" style="{{ ch.style }}" style-hover="background: color-mix(in srgb, var(--color-text) 7%, transparent); color: var(--color-neutral-100);">
-            <span style="opacity: 0.45;">#</span>
-            <span style="flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ ch.name }}</span>
-            <sc-if value="{{ ch.live }}" hint-placeholder-val="{{ false }}">
-              <span style="width: 6px; height: 6px; border-radius: 50%; background: oklch(0.72 0.14 145);"></span>
-            </sc-if>
-          </button>
-        </sc-for>
+        <div id="channelListOuter" style="position: relative;">
+          <div id="channelHighlight" style="position: absolute; left: 0; right: 0; top: 0; height: 0; border-radius: 8px; background: color-mix(in srgb, var(--color-accent) 15%, transparent); transition: transform 0.2s cubic-bezier(0.2, 0.75, 0.2, 1), height 0.15s ease; pointer-events: none;"></div>
+          <div id="channelList" style="position: relative; display: flex; flex-direction: column; gap: 2px;"></div>
+        </div>
       </div>
 
       <div style="display: flex; flex-direction: column; gap: 2px;">
         <div style="font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: color-mix(in srgb, var(--color-text) 45%, transparent); padding: 0 8px 6px;">Here</div>
-        <sc-for list="{{ members }}" as="m" hint-placeholder-count="2">
-          <div style="display: flex; align-items: center; gap: 9px; padding: 5px 8px; border-radius: 8px;" style-hover="background: color-mix(in srgb, var(--color-text) 7%, transparent);">
-            <div style="{{ m.avatarStyle }}">{{ m.badge }}</div>
-            <span style="flex: 1; font-size: 13.5px; color: color-mix(in srgb, var(--color-text) 70%, transparent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ m.name }}</span>
-            <sc-if value="{{ m.isBot }}" hint-placeholder-val="{{ false }}">
-              <span class="tag tag-accent" style="font-size: 9px; letter-spacing: 0.06em; padding: 2px 6px;">BOT</span>
-            </sc-if>
-          </div>
-        </sc-for>
+        <div id="memberList" style="display: flex; flex-direction: column; gap: 2px;"></div>
       </div>
 
-      <sc-if value="{{ isAdmin }}" hint-placeholder-val="{{ false }}">
-        <button onClick="{{ resetConversation }}" class="btn btn-secondary" style="justify-content: flex-start; width: 100%; font-size: 13px;">{{ resetLabel }}</button>
-      </sc-if>
+      <button id="resetBtn" class="btn btn-secondary" style="display: none; justify-content: flex-start; width: 100%; font-size: 13px;"></button>
     </div>
 
-    <button onClick="{{ openSettings }}" style="display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; border: 0; border-top: 1px solid var(--color-divider); background: transparent; cursor: pointer; padding: 11px;" style-hover="background: color-mix(in srgb, var(--color-text) 7%, transparent);">
-      <div style="{{ youAvatarStyle }}">{{ youBadge }}</div>
+    <button id="accountBtn" class="account-btn" style="display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; border: 0; border-top: 1px solid var(--color-divider); background: transparent; cursor: pointer; padding: 11px;">
+      <div id="youAvatar"></div>
       <div style="flex: 1; min-width: 0;">
-        <div style="font-size: 13px; color: var(--color-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ youName }}</div>
-        <div style="font-size: 10px; color: color-mix(in srgb, var(--color-text) 45%, transparent);">{{ youStatus }}</div>
+        <div id="youName" style="font-size: 13px; color: var(--color-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">…</div>
+        <div style="font-size: 10px; color: color-mix(in srgb, var(--color-text) 45%, transparent);">online</div>
       </div>
       <span style="font-size: 15px; color: color-mix(in srgb, var(--color-text) 45%, transparent);">&#9881;</span>
     </button>
@@ -77,537 +47,124 @@
   <main style="flex: 1; min-width: 0; display: flex; flex-direction: column;">
     <header style="flex: none; height: 56px; padding: 0 20px; display: flex; align-items: center; gap: 14px; border-bottom: 1px solid var(--color-divider); background: var(--color-bg);">
       <div style="display: flex; align-items: center; gap: 8px; min-width: 0;">
-        <span style="{{ statusDotStyle }}"></span>
+        <span id="statusDot" style="width: 6px; height: 6px; border-radius: 50%;"></span>
         <span style="color: color-mix(in srgb, var(--color-text) 45%, transparent); font-size: 15px;">#</span>
-        <span style="font-family: var(--font-heading); font-weight: 600; color: var(--color-neutral-100);">{{ activeName }}</span>
+        <span id="activeName" style="font-family: var(--font-heading); font-weight: 600; color: var(--color-neutral-100);">general</span>
       </div>
       <div style="width: 1px; height: 22px; background: var(--color-divider);"></div>
-      <div style="flex: 1; min-width: 0; font-size: 12px; color: color-mix(in srgb, var(--color-text) 65%, transparent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ statusLine }}</div>
-      <button onClick="{{ toggleInfo }}" class="btn btn-secondary" style="font-size: 12px; padding: 5px 12px;">details</button>
+      <div id="statusLine" style="flex: 1; min-width: 0; font-size: 12px; color: color-mix(in srgb, var(--color-text) 65%, transparent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"></div>
+      <button id="detailsBtn" class="btn btn-secondary" style="font-size: 12px; padding: 5px 12px;">details</button>
     </header>
 
     <div style="flex: 1; min-width: 0; display: flex; overflow: hidden;">
-      <div class="scroll" ref="{{ scrollRef }}" style="flex: 1; min-width: 0; overflow-y: auto; padding: 26px 20px 8px;">
+      <div class="scroll" id="messageScroll" style="flex: 1; min-width: 0; overflow-y: auto; padding: 26px 20px 8px;">
         <div style="max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; gap: 2px;">
 
           <div style="padding: 0 8px 18px; display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px;">
-            <div style="font-size: 11px; color: color-mix(in srgb, var(--color-text) 45%, transparent);">{{ conversationLabel }}</div>
+            <div id="conversationLabel" style="font-size: 11px; color: color-mix(in srgb, var(--color-text) 45%, transparent);"></div>
             <div style="flex: 1; height: 1px; background: linear-gradient(to right, var(--color-divider), transparent);"></div>
           </div>
 
-          <sc-for list="{{ messages }}" as="msg" hint-placeholder-count="4">
-            <div style="{{ msg.rowStyle }}" style-hover="background: color-mix(in srgb, var(--color-text) 5%, transparent);">
-              <div style="width: 38px; flex: none; padding-top: 2px;">
-                <sc-if value="{{ msg.showAvatar }}" hint-placeholder-val="{{ true }}">
-                  <div style="{{ msg.avatarStyle }}">{{ msg.badge }}</div>
-                </sc-if>
-              </div>
-              <div style="flex: 1; min-width: 0;">
-                <sc-if value="{{ msg.showAvatar }}" hint-placeholder-val="{{ true }}">
-                  <div style="display: flex; align-items: baseline; gap: 8px; margin-bottom: 1px;">
-                    <span style="{{ msg.nameStyle }}">{{ msg.author }}</span>
-                    <sc-if value="{{ msg.isBot }}" hint-placeholder-val="{{ false }}">
-                      <span class="tag tag-accent" style="font-size: 9px; letter-spacing: 0.06em; padding: 2px 6px;">BOT</span>
-                    </sc-if>
-                    <span style="font-size: 10.5px; color: color-mix(in srgb, var(--color-text) 40%, transparent);">{{ msg.time }}</span>
-                  </div>
-                </sc-if>
-                <div style="color: var(--color-text); white-space: pre-wrap; overflow-wrap: anywhere; text-wrap: pretty;">{{ msg.body }}</div>
-                <sc-if value="{{ msg.image }}" hint-placeholder-val="{{ false }}">
-                  <div role="img" aria-label="generated image" style="{{ msg.imageStyle }}"></div>
-                </sc-if>
-                <sc-if value="{{ msg.stats }}" hint-placeholder-val="{{ false }}">
-                  <div style="font-size: 10.5px; color: color-mix(in srgb, var(--color-text) 40%, transparent); margin-top: 5px;">{{ msg.stats }}</div>
-                </sc-if>
-              </div>
-            </div>
-          </sc-for>
+          <div id="messageList"></div>
 
-          <sc-if value="{{ thinking }}" hint-placeholder-val="{{ false }}">
-            <div style="display: flex; gap: 12px; padding: 7px 12px 7px 8px;">
-              <div style="width: 38px; flex: none;">
-                <div style="{{ botAvatarStyle }}">{{ botBadge }}</div>
-              </div>
-              <div style="display: flex; align-items: center; gap: 10px;">
-                <span style="font-size: 13px; color: color-mix(in srgb, var(--color-text) 65%, transparent);">{{ botName }} is typing</span>
-                <span style="display: flex; gap: 4px;">
-                  <span style="width: 5px; height: 5px; border-radius: 50%; background: var(--color-accent); animation: blip 1.1s infinite;"></span>
-                  <span style="width: 5px; height: 5px; border-radius: 50%; background: var(--color-accent); animation: blip 1.1s 0.15s infinite;"></span>
-                  <span style="width: 5px; height: 5px; border-radius: 50%; background: var(--color-accent); animation: blip 1.1s 0.3s infinite;"></span>
-                </span>
-              </div>
+          <div id="typingRow" style="display: none; gap: 12px; padding: 7px 12px 7px 8px;">
+            <div style="width: 38px; flex: none;"><div id="typingAvatar"></div></div>
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <span id="typingLabel" style="font-size: 13px; color: color-mix(in srgb, var(--color-text) 65%, transparent);"></span>
+              <span style="display: flex; gap: 4px;">
+                <span style="width: 5px; height: 5px; border-radius: 50%; background: var(--color-accent); animation: blip 1.1s infinite;"></span>
+                <span style="width: 5px; height: 5px; border-radius: 50%; background: var(--color-accent); animation: blip 1.1s 0.15s infinite;"></span>
+                <span style="width: 5px; height: 5px; border-radius: 50%; background: var(--color-accent); animation: blip 1.1s 0.3s infinite;"></span>
+              </span>
             </div>
-          </sc-if>
+          </div>
 
           <div style="height: 14px;"></div>
         </div>
       </div>
 
-      <sc-if value="{{ infoOpen }}" hint-placeholder-val="{{ false }}">
-        <aside class="scroll" style="width: 272px; flex: none; overflow-y: auto; border-left: 1px solid var(--color-divider); background: var(--color-surface); padding: 18px 16px; display: flex; flex-direction: column; gap: 22px;">
-          <div style="display: flex; flex-direction: column; gap: 10px;">
-            <div style="font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--color-accent);">Runtime</div>
-            <sc-for list="{{ runtime }}" as="r" hint-placeholder-count="4">
-              <div style="display: flex; justify-content: space-between; gap: 10px; font-size: 13px;">
-                <span style="color: color-mix(in srgb, var(--color-text) 65%, transparent);">{{ r.k }}</span>
-                <span style="font-size: 12.5px; color: var(--color-text); text-align: right;">{{ r.v }}</span>
-              </div>
-            </sc-for>
-          </div>
-          <div style="display: flex; flex-direction: column; gap: 8px;">
-            <div style="font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--color-accent);">About</div>
-            <div style="font-size: 13px; color: color-mix(in srgb, var(--color-text) 70%, transparent); background: var(--color-bg); border: 1px solid var(--color-divider); border-radius: 8px; padding: 11px; line-height: 1.5;">{{ about }}</div>
-          </div>
-        </aside>
-      </sc-if>
+      <aside id="infoPanel" class="scroll" style="width: 272px; flex: none; overflow-y: auto; border-left: 1px solid var(--color-divider); background: var(--color-surface); padding: 18px 16px; display: flex; flex-direction: column; gap: 22px;">
+        <div style="display: flex; flex-direction: column; gap: 10px;">
+          <div style="font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--color-accent);">Runtime</div>
+          <div id="runtimeList" style="display: flex; flex-direction: column; gap: 8px;"></div>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+          <div style="font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--color-accent);">About</div>
+          <div id="aboutText" style="font-size: 13px; color: color-mix(in srgb, var(--color-text) 70%, transparent); background: var(--color-bg); border: 1px solid var(--color-divider); border-radius: 8px; padding: 11px; line-height: 1.5;"></div>
+        </div>
+      </aside>
     </div>
 
     <div style="flex: none; padding: 4px 20px 20px; background: var(--color-bg);">
       <div style="max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; gap: 7px;">
-        <div style="display: flex; align-items: flex-end; gap: 10px; background: var(--color-surface); border: 1px solid var(--color-divider); border-radius: 10px; padding: 10px 10px 10px 14px;" style-focus-within="border-color: var(--color-accent);">
-          <textarea ref="{{ inputRef }}" value="{{ draft }}" onChange="{{ onDraft }}" onKeyDown="{{ onKey }}" rows="1" placeholder="{{ placeholder }}" style="flex: 1; min-width: 0; resize: none; background: transparent; border: 0; outline: none; color: var(--color-text); font-size: 15px; line-height: 1.5; max-height: 160px; padding: 4px 0;"></textarea>
-          <button onClick="{{ send }}" style="{{ sendStyle }}" style-hover="background: color-mix(in srgb, var(--color-accent) 12%, transparent);">Send</button>
+        <div class="composer-box" style="display: flex; align-items: flex-end; gap: 10px; background: var(--color-surface); border: 1px solid var(--color-divider); border-radius: 10px; padding: 10px 10px 10px 14px;">
+          <textarea id="draftInput" rows="1" placeholder="" style="flex: 1; min-width: 0; resize: none; background: transparent; border: 0; outline: none; color: var(--color-text); font-size: 15px; line-height: 1.5; max-height: 160px; padding: 4px 0;"></textarea>
+          <button id="sendBtn" class="send-btn" style="flex: none; cursor: default; font-family: var(--font-heading); font-size: 14px; font-weight: 500; padding: 8px 16px; border-radius: 8px; background: transparent; border: 1px solid var(--color-divider); color: color-mix(in srgb, var(--color-text) 35%, transparent);">Send</button>
         </div>
         <div style="display: flex; justify-content: space-between; gap: 12px; font-size: 10.5px; color: color-mix(in srgb, var(--color-text) 40%, transparent);">
           <span>Enter to send &middot; Shift+Enter for a new line</span>
-          <span>{{ charCount }}</span>
+          <span id="charCount"></span>
         </div>
       </div>
     </div>
   </main>
 
-  <sc-if value="{{ settingsOpen }}" hint-placeholder-val="{{ false }}">
-    <div onClick="{{ closeSettings }}" class="dialog-backdrop" style="z-index: 40;">
-      <div onClick="{{ stop }}" class="scroll elev-lg" style="width: 100%; max-width: 520px; max-height: 86vh; overflow-y: auto; background: var(--color-surface); border-radius: var(--radius-lg); animation: pop 0.16s ease-out;">
+  <div id="settingsBackdrop" class="dialog-backdrop" style="display: none; z-index: 40;">
+    <div id="settingsDialog" class="scroll elev-lg" style="width: 100%; max-width: 520px; max-height: 86vh; overflow-y: auto; background: var(--color-surface); border-radius: var(--radius-lg); animation: pop 0.16s ease-out;">
 
-        <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--color-divider); position: sticky; top: 0; background: var(--color-surface); z-index: 1;">
-          <div style="font-family: var(--font-heading); font-size: 18px; font-weight: 500; color: var(--color-neutral-100);">Settings</div>
-          <button onClick="{{ closeSettings }}" class="btn btn-icon btn-ghost" style="font-size: 20px; color: color-mix(in srgb, var(--color-text) 50%, transparent);">&times;</button>
-        </div>
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--color-divider); position: sticky; top: 0; background: var(--color-surface); z-index: 1;">
+        <div style="font-family: var(--font-heading); font-size: 18px; font-weight: 500; color: var(--color-neutral-100);">Settings</div>
+        <button id="settingsCloseX" class="btn btn-icon btn-ghost" style="font-size: 20px; color: color-mix(in srgb, var(--color-text) 50%, transparent);">&times;</button>
+      </div>
 
-        <div style="padding: 20px; display: flex; flex-direction: column; gap: 26px;">
+      <div style="padding: 20px; display: flex; flex-direction: column; gap: 26px;">
 
-          <sc-if value="{{ account }}" hint-placeholder-val="{{ false }}">
-            <section style="display: flex; flex-direction: column; gap: 10px;">
-              <div style="font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--color-accent);">Account</div>
-              <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
-                <span style="display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--color-text);">
-                  Signed in as {{ accountUsername }}
-                  <sc-if value="{{ isAdmin }}" hint-placeholder-val="{{ false }}">
-                    <span class="tag tag-accent" style="font-size: 9px; letter-spacing: 0.06em; padding: 2px 6px;">ADMIN</span>
-                  </sc-if>
-                </span>
-                <button onClick="{{ logout }}" class="btn btn-ghost" style="font-size: 12.5px; color: color-mix(in srgb, var(--color-text) 65%, transparent);">Log out</button>
+        <section style="display: flex; flex-direction: column; gap: 10px;">
+          <div style="font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--color-accent);">Account</div>
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+            <span id="accountLine" style="display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--color-text);"></span>
+            <button id="logoutBtn" class="btn btn-ghost" style="font-size: 12.5px; color: color-mix(in srgb, var(--color-text) 65%, transparent);">Log out</button>
+          </div>
+        </section>
+
+        <section style="display: flex; flex-direction: column; gap: 12px;">
+          <div style="font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--color-accent);">Profile</div>
+          <div style="display: flex; align-items: center; gap: 14px;">
+            <div id="bigAvatar"></div>
+            <div style="display: flex; flex-direction: column; gap: 7px; flex: 1; min-width: 0;">
+              <div style="display: flex; gap: 8px;">
+                <button id="pickPhotoBtn" class="btn btn-secondary" style="font-size: 12.5px;">Upload photo</button>
+                <button id="clearPhotoBtn" class="btn btn-ghost" style="font-size: 12.5px; color: color-mix(in srgb, var(--color-text) 65%, transparent);">Remove</button>
               </div>
-            </section>
-          </sc-if>
-
-          <section style="display: flex; flex-direction: column; gap: 12px;">
-            <div style="font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--color-accent);">Profile</div>
-            <div style="display: flex; align-items: center; gap: 14px;">
-              <div style="{{ bigAvatarStyle }}">{{ youBadge }}</div>
-              <div style="display: flex; flex-direction: column; gap: 7px; flex: 1; min-width: 0;">
-                <div style="display: flex; gap: 8px;">
-                  <button onClick="{{ pickPhoto }}" class="btn btn-secondary" style="font-size: 12.5px;">Upload photo</button>
-                  <button onClick="{{ clearPhoto }}" class="btn btn-ghost" style="font-size: 12.5px; color: color-mix(in srgb, var(--color-text) 65%, transparent);">Remove</button>
-                </div>
-                <div style="font-size: 10.5px; color: color-mix(in srgb, var(--color-text) 45%, transparent);">Stored in this browser only.</div>
-              </div>
+              <div style="font-size: 10.5px; color: color-mix(in srgb, var(--color-text) 45%, transparent);">Stored in this browser only.</div>
             </div>
-            <input type="file" accept="image/*" ref="{{ fileRef }}" onChange="{{ onPhoto }}" style="display: none;" />
+          </div>
+          <input type="file" accept="image/*" id="photoInput" style="display: none;" />
 
-            <div class="field">
-              <span style="display: block; font-size: 12px; margin-bottom: 5px; color: color-mix(in srgb, var(--color-text) 70%, transparent);">Avatar colour</span>
-              <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                <sc-for list="{{ hueSwatches }}" as="h" hint-placeholder-count="7">
-                  <button onClick="{{ h.pick }}" style="{{ h.style }}"></button>
-                </sc-for>
-              </div>
-            </div>
-          </section>
+          <div class="field">
+            <span style="display: block; font-size: 12px; margin-bottom: 5px; color: color-mix(in srgb, var(--color-text) 70%, transparent);">Avatar colour</span>
+            <div id="swatchList" style="display: flex; gap: 8px; flex-wrap: wrap;"></div>
+          </div>
+        </section>
 
-          <section style="display: flex; flex-direction: column; gap: 10px;">
-            <div style="font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--color-accent);">Stored data</div>
-            <div style="font-size: 13px; color: color-mix(in srgb, var(--color-text) 65%, transparent);">{{ storageNote }}</div>
-            <div style="display: flex; gap: 8px;">
-              <sc-if value="{{ isAdmin }}" hint-placeholder-val="{{ false }}">
-                <button onClick="{{ clearHistory }}" class="btn btn-secondary" style="font-size: 12.5px;">Clear chat history</button>
-              </sc-if>
-              <button onClick="{{ resetAll }}" class="btn btn-ghost" style="font-size: 12.5px; color: color-mix(in srgb, var(--color-text) 65%, transparent);">Reset everything</button>
-            </div>
-          </section>
-        </div>
+        <section style="display: flex; flex-direction: column; gap: 10px;">
+          <div style="font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--color-accent);">Stored data</div>
+          <div id="storageNote" style="font-size: 13px; color: color-mix(in srgb, var(--color-text) 65%, transparent);"></div>
+          <div style="display: flex; gap: 8px;">
+            <button id="clearHistoryBtn" class="btn btn-secondary" style="display: none; font-size: 12.5px;">Clear chat history</button>
+            <button id="resetAllBtn" class="btn btn-ghost" style="font-size: 12.5px; color: color-mix(in srgb, var(--color-text) 65%, transparent);">Reset everything</button>
+          </div>
+        </section>
+      </div>
 
-        <div style="padding: 14px 20px; border-top: 1px solid var(--color-divider); display: flex; justify-content: flex-end; position: sticky; bottom: 0; background: var(--color-surface);">
-          <button onClick="{{ closeSettings }}" class="btn btn-primary">Done</button>
-        </div>
+      <div style="padding: 14px 20px; border-top: 1px solid var(--color-divider); display: flex; justify-content: flex-end; position: sticky; bottom: 0; background: var(--color-surface);">
+        <button id="settingsDoneBtn" class="btn btn-primary">Done</button>
       </div>
     </div>
-  </sc-if>
+  </div>
+
 </div>
 
-</x-dc>
-<script type="text/x-dc" data-dc-script data-props="{&quot;botName&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;Lappland&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;infoOpenByDefault&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;}}">
-const HUES = { bot: 289 };
-const SWATCH_HUES = [289, 250, 200, 150, 60, 30, 340];
-const PROFILE_KEY = "lappland.webui.profile.v2"; // local-only cosmetic (avatar photo/colour), see module docstring in webui_server.py for why identity itself no longer lives here
-const POLL_MS = 3000;
-
-// Every channel is now shared/persisted server-side (core/chat_store.py) --
-// everyone viewing a channel sees the same messages. Only "general" also
-// gets bot replies (get_ai_response / /imagine / text commands); the other
-// three are shared note-taking with no LLM call. Must stay in sync with
-// WEBUI_CHANNELS/WEBUI_BOT_CHANNEL in core/config.py.
-const CHANNELS = [
-  { key: "general", name: "general", topic: "Public channel -- Lappland listens and replies here.", botReplies: true },
-  { key: "bug-reports", name: "bug-reports", topic: "Something broke? Note it here. No bot replies.", botReplies: false },
-  { key: "feature-suggestions", name: "feature-suggestions", topic: "Half-formed ideas welcome. No bot replies.", botReplies: false },
-  { key: "off-topic", name: "off-topic", topic: "Anything else -- no bot here.", botReplies: false }
-];
-
-// Deterministic per-username colour so two different people never default to
-// the same hue -- used for anyone who hasn't (can't -- see below) set a
-// custom avatar colour of their own.
-function hueForName(name) {
-  let h = 0;
-  for (let i = 0; i < (name || "").length; i++) h = (h * 31 + name.charCodeAt(i)) % 360;
-  return h;
-}
-
-function formatTime(iso) {
-  if (!iso) return "";
-  const d = new Date(iso);
-  return `${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`;
-}
-
-class Component extends DCLogic {
-  constructor(props) {
-    super(props);
-    this.state = {
-      draft: "", thinking: false, infoOpen: props.infoOpenByDefault ?? true, settingsOpen: false,
-      active: "general",
-      messages: CHANNELS.reduce((acc, c) => { acc[c.key] = []; return acc; }, {}),
-      loaded: CHANNELS.reduce((acc, c) => { acc[c.key] = false; return acc; }, {}),
-      lastIds: CHANNELS.reduce((acc, c) => { acc[c.key] = 0; return acc; }, {}),
-      // Local-only cosmetic overrides for how *your own* messages render in
-      // *your own* browser -- there's nowhere server-side to put an avatar
-      // photo, and other viewers have no way to see it regardless (see
-      // hueForName above for how everyone else's colour is derived instead).
-      profile: { hue: null, photo: "" },
-      botName: props.botName ?? "Lappland",
-      model: "…", mood: "…", lastProvider: null, connected: true,
-      account: null
-    };
-  }
-
-  // Gate: redirect to the login page if there's no valid session. This is a
-  // client-side check only -- see webui_server.py's docstring for what IS
-  // enforced server-side (every /api/* route below /api/register|login does
-  // require a session; this is just the UX redirect on top of that).
-  checkAuth = () => {
-    fetch("/api/me")
-      .then(res => { if (!res.ok) throw new Error("unauthenticated"); return res.json(); })
-      .then(data => {
-        this.setState({ account: { userId: data.user_id, username: data.username, isAdmin: !!data.isAdmin } });
-        this.refreshInfo();
-        this.loadChannel(this.state.active);
-        this._poll = setInterval(this.pollActive, POLL_MS);
-      })
-      .catch(() => { window.location.href = "/login.html"; });
-  };
-
-  logout = () => {
-    fetch("/api/logout", { method: "POST" }).finally(() => { window.location.href = "/login.html"; });
-  };
-
-  componentDidMount() {
-    let saved = null;
-    try { saved = JSON.parse(localStorage.getItem(PROFILE_KEY) || "null"); } catch (e) { saved = null; }
-    if (saved) this.setState(s => ({ profile: Object.assign({}, s.profile, saved) }));
-
-    this.checkAuth();
-  }
-
-  componentDidUpdate() {
-    this.scrollDown();
-    this.persist();
-  }
-
-  componentWillUnmount() {
-    clearInterval(this._poll);
-  }
-
-  persist() {
-    try { localStorage.setItem(PROFILE_KEY, JSON.stringify(this.state.profile)); } catch (e) { /* quota or blocked storage -- UI keeps working */ }
-  }
-
-  scrollDown = () => { const el = this._scroll; if (el) el.scrollTop = el.scrollHeight; };
-
-  // Full history for a channel -- called once the first time it's opened
-  // (see `select` in renderVals's channels list below).
-  loadChannel = key => {
-    fetch(`/api/messages/${key}`)
-      .then(res => { if (!res.ok) throw new Error("bad response"); return res.json(); })
-      .then(data => {
-        const msgs = data.messages || [];
-        this.setState(s => ({
-          messages: { ...s.messages, [key]: msgs },
-          loaded: { ...s.loaded, [key]: true },
-          lastIds: { ...s.lastIds, [key]: msgs.length ? msgs[msgs.length - 1].id : 0 }
-        }));
-      })
-      .catch(() => {});
-  };
-
-  // Short polling, not a push channel -- fine for a 10-20 person group, see
-  // core/chat_store.py's module docstring. Only polls the channel you're
-  // actually looking at.
-  pollActive = () => {
-    const key = this.state.active;
-    if (!this.state.loaded[key]) return;
-    const since = this.state.lastIds[key] || 0;
-    fetch(`/api/messages/${key}?since=${since}`)
-      .then(res => { if (!res.ok) throw new Error("bad response"); return res.json(); })
-      .then(data => {
-        const fresh = data.messages || [];
-        if (!fresh.length) return;
-        this.setState(s => ({
-          messages: { ...s.messages, [key]: [...s.messages[key], ...fresh] },
-          lastIds: { ...s.lastIds, [key]: fresh[fresh.length - 1].id }
-        }));
-      })
-      .catch(() => {});
-  };
-
-  refreshInfo = () => {
-    fetch("/api/info")
-      .then(res => { if (!res.ok) throw new Error("bad response"); return res.json(); })
-      .then(data => this.setState({
-        botName: data.botName || this.state.botName,
-        model: data.model || this.state.model,
-        mood: data.mood || this.state.mood,
-        lastProvider: data.lastProvider || null,
-        connected: true
-      }))
-      .catch(() => this.setState({ connected: false }));
-  };
-
-  avatarStyle(hue, photo, size) {
-    const s = size || 30;
-    const base = `width:${s}px;height:${s}px;border-radius:50%;flex:none;display:grid;place-items:center;font-size:${Math.round(s * 0.4)}px;font-weight:600;overflow:hidden;`;
-    if (photo) return base + `background-image:url(${photo});background-size:cover;background-position:center;color:transparent;`;
-    return base + `background:oklch(0.45 0.07 ${hue});color:oklch(0.96 0.02 ${hue});`;
-  }
-
-  send = () => {
-    const text = this.state.draft.trim();
-    if (!text) return;
-    const active = this.state.active;
-    const chan = CHANNELS.find(c => c.key === active);
-
-    if (chan.botReplies && this.state.thinking) return;
-    this.setState({ draft: "", thinking: chan.botReplies });
-
-    fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: text, channel: active })
-    })
-      .then(res => res.json().then(data => ({ ok: res.ok, data })))
-      .then(({ ok, data }) => {
-        if (!ok) { this.setState({ thinking: false, connected: false }); return; }
-        this.setState(s => {
-          const msgs = [...s.messages[active]];
-          let lastId = s.lastIds[active] || 0;
-          if (data.message) { msgs.push(data.message); lastId = data.message.id; }
-          if (data.reply) { msgs.push(data.reply); lastId = data.reply.id; }
-          return {
-            thinking: false, connected: true,
-            mood: data.mood || s.mood, lastProvider: data.provider || s.lastProvider,
-            messages: { ...s.messages, [active]: msgs },
-            lastIds: { ...s.lastIds, [active]: lastId }
-          };
-        });
-      })
-      .catch(() => this.setState({ thinking: false, connected: false }));
-  };
-
-  // Shared helper for both reset actions below -- POST /api/reset for one
-  // channel, then splice its (possibly re-seeded) greeting into local state.
-  _resetChannel = key => {
-    return fetch("/api/reset", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ channel: key })
-    })
-      .then(res => res.json())
-      .then(data => ({ key, greeting: data.greeting || null }));
-  };
-
-  _applyResets = results => {
-    this.setState(s => {
-      const messages = { ...s.messages }, lastIds = { ...s.lastIds };
-      for (const { key, greeting } of results) {
-        messages[key] = greeting ? [greeting] : [];
-        lastIds[key] = greeting ? greeting.id : 0;
-      }
-      return { messages, lastIds };
-    });
-  };
-
-  // Sidebar "Reset #<channel>" -- clears only the active channel, for
-  // everyone (this is a shared table now, not a per-browser one -- see
-  // core/chat_store.py). Admin-only server-side (403 otherwise, see
-  // webui_server.py's /api/reset) -- the button itself is only rendered for
-  // admins (see the `isAdmin` sc-if in the template) so this never actually
-  // gets called by anyone it would 403 for.
-  resetConversation = () => {
-    this._resetChannel(this.state.active).then(r => this._applyResets([r]));
-  };
-
-  // Settings "Clear chat history" -- clears every channel, unlike the
-  // sidebar's per-channel reset above. Same admin-only gating.
-  clearHistory = () => {
-    Promise.all(CHANNELS.map(c => this._resetChannel(c.key))).then(this._applyResets);
-  };
-
-  setProfile(patch) { this.setState(s => ({ profile: Object.assign({}, s.profile, patch) })); }
-
-  onPhoto = e => {
-    const f = e.target.files && e.target.files[0];
-    if (!f) return;
-    const r = new FileReader();
-    r.onload = () => {
-      const img = new Image();
-      img.onload = () => {
-        const n = 128, cv = document.createElement("canvas");
-        cv.width = n; cv.height = n;
-        const ctx = cv.getContext("2d");
-        const side = Math.min(img.width, img.height);
-        ctx.drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, n, n);
-        this.setProfile({ photo: cv.toDataURL("image/jpeg", 0.82) });
-      };
-      img.src = r.result;
-    };
-    r.readAsDataURL(f);
-    e.target.value = "";
-  };
-
-  renderVals() {
-    const st = this.state;
-    const pr = st.profile;
-    const chan = CHANNELS.find(c => c.key === st.active) || CHANNELS[0];
-    const activeMessages = st.messages[st.active] || [];
-    const myUsername = st.account ? st.account.username : null;
-    const myHue = pr.hue != null ? pr.hue : hueForName(myUsername || "");
-    const badge = (name, photo) => (photo ? "" : (name || "?").slice(0, 1).toUpperCase());
-
-    const members = [
-      { name: st.botName, isBot: true, hue: HUES.bot, photo: "" },
-      { name: myUsername || "…", hue: myHue, photo: pr.photo }
-    ];
-
-    const msgs = activeMessages.map((m, i) => {
-      const prev = activeMessages[i - 1];
-      const grouped = prev && prev.author === m.author && !prev.stats;
-      const isMe = !m.bot && m.author === myUsername;
-      const hue = m.bot ? HUES.bot : (isMe ? myHue : hueForName(m.author));
-      const photo = isMe ? pr.photo : "";
-      return {
-        showAvatar: !grouped, isBot: !!m.bot, author: m.author, time: formatTime(m.createdAt), body: m.body,
-        badge: badge(m.author, photo), stats: m.stats || false, image: m.image || false,
-        imageStyle: m.image ? `background-image:url(${m.image});background-size:contain;background-repeat:no-repeat;background-position:left center;background-color:var(--color-bg);width:100%;max-width:420px;height:420px;border-radius:10px;margin-top:8px;border:1px solid var(--color-divider);` : undefined,
-        avatarStyle: this.avatarStyle(hue, photo),
-        nameStyle: `font-family:var(--font-heading);font-weight:600;font-size:14px;color:oklch(0.82 0.05 ${hue});`,
-        rowStyle: `display:flex;gap:12px;padding:${grouped ? "1px" : "7px"} 12px 2px 8px;border-radius:8px;`
-      };
-    });
-
-    return {
-      messages: msgs,
-      thinking: st.thinking && chan.botReplies,
-      infoOpen: st.infoOpen,
-      toggleInfo: () => this.setState(s => ({ infoOpen: !s.infoOpen })),
-      draft: st.draft,
-      placeholder: chan.botReplies ? `Message ${st.botName} (or /help for commands)` : `Message #${chan.name}`,
-      charCount: st.draft.length ? `${st.draft.length} chars` : "",
-      onDraft: e => this.setState({ draft: e.target.value }),
-      onKey: e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); this.send(); } },
-      send: this.send,
-      sendStyle: st.draft.trim()
-        ? `flex:none;cursor:pointer;font-family:var(--font-heading);font-size:14px;font-weight:500;padding:8px 16px;border-radius:8px;background:transparent;border:1px solid var(--color-accent);color:var(--color-accent);`
-        : `flex:none;cursor:default;font-family:var(--font-heading);font-size:14px;font-weight:500;padding:8px 16px;border-radius:8px;background:transparent;border:1px solid var(--color-divider);color:color-mix(in srgb, var(--color-text) 35%, transparent);`,
-      inputRef: el => { this._input = el; },
-      scrollRef: el => { this._scroll = el; },
-      fileRef: el => { this._file = el; },
-
-      botName: st.botName,
-      modelLabel: st.model,
-      activeName: chan.name,
-      conversationLabel: chan.botReplies ? `Conversation with ${st.botName}` : `#${chan.name}`,
-      resetLabel: `Reset #${chan.name}`,
-      statusDotStyle: `width:6px;height:6px;border-radius:50%;background:${st.connected ? "oklch(0.72 0.14 145)" : "oklch(0.6 0.18 25)"};`,
-      statusLine: chan.botReplies ? (st.connected ? `${st.mood} · via ${st.lastProvider || "…"}` : "backend unreachable") : chan.topic,
-
-      channels: CHANNELS.map(c => ({
-        name: c.name, live: c.botReplies,
-        select: () => {
-          this.setState({ active: c.key });
-          if (!st.loaded[c.key]) this.loadChannel(c.key);
-        },
-        style: `display:flex;align-items:center;gap:8px;width:100%;text-align:left;border:0;cursor:pointer;font-size:14px;padding:6px 8px;border-radius:8px;background:${c.key === st.active ? "color-mix(in srgb, var(--color-accent) 15%, transparent)" : "transparent"};color:${c.key === st.active ? "var(--color-accent)" : "color-mix(in srgb, var(--color-text) 70%, transparent)"};`
-      })),
-
-      members: members.map(m => ({
-        name: m.name, isBot: !!m.isBot, badge: badge(m.name, m.photo),
-        avatarStyle: this.avatarStyle(m.hue, m.photo, 22)
-      })),
-      botBadge: st.botName.slice(0, 1).toUpperCase(),
-      botAvatarStyle: this.avatarStyle(HUES.bot, ""),
-      youName: myUsername || "…",
-      youStatus: "online",
-      youBadge: badge(myUsername, pr.photo),
-      youAvatarStyle: this.avatarStyle(myHue, pr.photo, 26),
-      bigAvatarStyle: this.avatarStyle(myHue, pr.photo, 60),
-
-      resetConversation: this.resetConversation,
-
-      account: !!st.account,
-      accountUsername: st.account ? st.account.username : "",
-      isAdmin: !!(st.account && st.account.isAdmin),
-      logout: this.logout,
-
-      settingsOpen: st.settingsOpen,
-      openSettings: () => this.setState({ settingsOpen: true }),
-      closeSettings: () => this.setState({ settingsOpen: false }),
-      stop: e => e.stopPropagation(),
-      pickPhoto: () => this._file && this._file.click(),
-      clearPhoto: () => this.setProfile({ photo: "" }),
-      onPhoto: this.onPhoto,
-      hueSwatches: SWATCH_HUES.map(h => ({
-        pick: () => this.setProfile({ hue: h }),
-        style: `width:28px;height:28px;border-radius:50%;cursor:pointer;background:oklch(0.5 0.09 ${h});border:2px solid ${pr.hue === h ? "var(--color-neutral-100)" : "transparent"};`
-      })),
-      storageNote: st.account && st.account.isAdmin
-        ? `Messages in every channel are shared and saved on the server -- everyone signed in sees the same conversation. Only your avatar photo/colour are kept in this browser. You're admin, so the buttons below wipe the shared channels for everyone.`
-        : `Messages in every channel are shared and saved on the server -- everyone signed in sees the same conversation. Only your avatar photo/colour are kept in this browser, and only you see them. Wiping shared channels is admin-only.`,
-      clearHistory: this.clearHistory,
-      resetAll: () => {
-        try { localStorage.removeItem(PROFILE_KEY); } catch (e) {}
-        if (st.account && st.account.isAdmin) this.clearHistory();
-        this.setState({ profile: { hue: null, photo: "" } });
-      },
-
-      runtime: [
-        { k: "model", v: st.model },
-        { k: "served by", v: st.lastProvider || "…" },
-        { k: "mood", v: st.mood },
-        { k: "history", v: `${activeMessages.length} in #${chan.name}` }
-      ],
-      about: `${st.botName} answers through ${st.model}, falling back across Groq → Gemini → Cloudflare → Mistral → OpenRouter if a provider is rate-limited or down. Type /help for text commands. #general is the only channel Lappland reads -- bug-reports, feature-suggestions and off-topic are just notes for you.`
-    };
-  }
-}
-
-</script>
+<script src="./chat.js"></script>
 </body>
 </html>

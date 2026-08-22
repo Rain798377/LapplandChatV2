@@ -2,7 +2,8 @@
 webui_server.py -- local HTTP server for the WebUI/ chat client.
 
 This branch's interface to the bot is this page instead of Discord. It
-serves the browser frontend (WebUI/index.html + support.js) and exposes a
+serves the browser frontend (WebUI/index.html + chat.js, WebUI/login.html +
+login.js -- plain vanilla JS/CSS, no build step or framework) and exposes a
 small JSON API that drives it through the exact same LLM fallback chain and
 memory system the Discord bot uses (core/ai.py, core/memory.py) -- reused,
 not duplicated, so persona/mood/memory behave identically either way.
@@ -16,15 +17,21 @@ session, never from the client's request body -- see chat() below.
 
 Endpoints:
     GET  /              -- the chat client (WebUI/index.html)
-    GET  /support.js     -- the client's runtime (WebUI/support.js)
+    GET  /chat.css       -- index.html's styles
+    GET  /chat.js        -- index.html's behavior
     GET  /login.html     -- sign-in page (WebUI/login.html, Nocturne design
                              system -- see WebUI/nocturne.css)
-    GET  /nocturne.css   -- login.html's/index.html's stylesheet
+    GET  /login.css      -- login.html's styles
+    GET  /login.js       -- login.html's behavior
+    GET  /nocturne.css   -- shared design-system stylesheet
     GET  /images/{file}  -- a generated image (core.imagegen.IMAGES_DIR) -- requires a session
     GET  /api/info       -- bot name, model, mood, provider chain, last
                              provider that actually served a reply -- requires a session
     GET  /api/messages/{channel}?since=<id> -- that channel's messages (all,
                              or only those after `since` for polling) -- requires a session
+    POST /api/messages/{id}/edit -- {"body"} -> {"message"} -- the message's own
+                             author, or the admin account, may edit; 403 otherwise
+    POST /api/messages/{id}/delete -- same author-or-admin gating; 403 otherwise
     POST /api/chat        -- {"message", "channel"} -> {"message", "reply", "mood",
                              "provider", "isCommand"} -- requires a session; username/
                              user_id always come from the session, any client-supplied
@@ -102,6 +109,10 @@ class ResetRequest(BaseModel):
     channel: str = WEBUI_BOT_CHANNEL
 
 
+class EditMessageRequest(BaseModel):
+    body: str
+
+
 class AuthRequest(BaseModel):
     # login.html sends all three every time (whichever of username/email
     # apply to what was typed in its one "identifier" field) -- identifier is
@@ -126,11 +137,6 @@ def index():
     return FileResponse(f"{WEBUI_DIR}/index.html")
 
 
-@app.get("/support.js")
-def support_js():
-    return FileResponse(f"{WEBUI_DIR}/support.js", media_type="application/javascript")
-
-
 @app.get("/login.html")
 def login():
     return FileResponse(f"{WEBUI_DIR}/login.html")
@@ -139,6 +145,26 @@ def login():
 @app.get("/nocturne.css")
 def nocturne_css():
     return FileResponse(f"{WEBUI_DIR}/nocturne.css", media_type="text/css")
+
+
+@app.get("/chat.css")
+def chat_css():
+    return FileResponse(f"{WEBUI_DIR}/chat.css", media_type="text/css")
+
+
+@app.get("/chat.js")
+def chat_js():
+    return FileResponse(f"{WEBUI_DIR}/chat.js", media_type="application/javascript")
+
+
+@app.get("/login.css")
+def login_css():
+    return FileResponse(f"{WEBUI_DIR}/login.css", media_type="text/css")
+
+
+@app.get("/login.js")
+def login_js():
+    return FileResponse(f"{WEBUI_DIR}/login.js", media_type="application/javascript")
 
 
 @app.get("/images/{filename}")
@@ -172,6 +198,38 @@ async def get_messages(channel: str, since: int = 0, user=Depends(require_user))
         raise HTTPException(status_code=404, detail="unknown channel")
     rows = await asyncio.to_thread(chat_store.get_messages, channel, since)
     return {"messages": [chat_store.serialize(r) for r in rows]}
+
+
+def _can_modify(user, row) -> bool:
+    """A message's own author may edit/delete it; the admin account may
+    edit/delete anyone's (including the bot's -- e.g. to clean up a bad
+    reply)."""
+    return auth.is_admin(user) or (not row["is_bot"] and row["user_id"] == user["user_id"])
+
+
+@app.post("/api/messages/{message_id}/edit")
+async def edit_message(message_id: int, req: EditMessageRequest, user=Depends(require_user)):
+    row = await asyncio.to_thread(chat_store.get_message, message_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="message not found")
+    if not _can_modify(user, row):
+        raise HTTPException(status_code=403, detail="you can't edit this message")
+    body = req.body.strip()
+    if not body:
+        raise HTTPException(status_code=400, detail="message can't be empty")
+    updated = await asyncio.to_thread(chat_store.edit_message, message_id, body)
+    return {"message": chat_store.serialize(updated)}
+
+
+@app.post("/api/messages/{message_id}/delete")
+async def delete_message(message_id: int, user=Depends(require_user)):
+    row = await asyncio.to_thread(chat_store.get_message, message_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="message not found")
+    if not _can_modify(user, row):
+        raise HTTPException(status_code=403, detail="you can't delete this message")
+    await asyncio.to_thread(chat_store.delete_message, message_id)
+    return {"status": "ok"}
 
 
 @app.post("/api/chat")
