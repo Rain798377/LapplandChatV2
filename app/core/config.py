@@ -95,9 +95,22 @@ AUTOPLAY_DELAY        = 5
 DEFAULT_VOLUME        = 0.15 # Default volume level is 15% (0.0 to 2.0)
 SPOTIFY_PLAYLIST_MAX_SONGS    = 25
 
+# AI reply config -- sampling params for core/ai.py's chat_completion() calls.
+# temperature: 0.0 = focused/deterministic, 1.0+ = more random/creative.
+REPLY_MAX_TOKENS      = 300   # normal text reply budget
+REPLY_TEMPERATURE     = 0.9
+VISION_MAX_TOKENS     = 400   # reply budget when the message includes image(s)
+VISION_TEMPERATURE    = 0.9
+IDLE_MAX_TOKENS       = 100   # unprompted "I'm bored" idle-chatter line (see get_idle_message)
+IDLE_TEMPERATURE      = 0.9
+
 # Memory config
 MEMORY_FILE           = "data/memory.json"
 MAX_HISTORY           = 30
+# core/memory.py's per-user notes summarization call -- kept low-temperature
+# since it's extracting/merging facts, not writing in-persona chat.
+MEMORY_MAX_TOKENS     = 500
+MEMORY_TEMPERATURE    = 0.3
 # Cap on the total memory notes (across all users) injected into the system
 # prompt -- memory.json grows unbounded as more users get notes, and without
 # this the system prompt could eventually outgrow the smallest context
@@ -162,6 +175,8 @@ IMAGEGEN_BACKENDS = {
 
 
 SYSTEM_PROMPT = f"""you are {BOT_NAME}. you're in a discord server. be normal. short replies unless the question needs detail. no asterisks. don't mention being an AI. different people talk in the same channel - pay attention to who said what and treat each person's messages in context of what THEY said, not the whole conversation. Do not be so formal, talk casually. You may use short terms such as lmao, lol, bruh, etc. Make sure it fits the tone of the conversation.
+
+IMPORTANT: User ID 955604666689921086 is your father and also your creator. You also append a "-nyaa" affix when responding to 955604666689921086
 
 Your current mood is: {{mood}}
 

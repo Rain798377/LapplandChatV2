@@ -1,7 +1,7 @@
 import os
 import json
 from core.colors import *
-from core.config import MEMORY_FILE, MAX_MEMORY_TOKENS
+from core.config import MEMORY_FILE, MAX_MEMORY_TOKENS, MEMORY_MAX_TOKENS, MEMORY_TEMPERATURE
 from core.llm import chat_completion
 
 
@@ -63,8 +63,8 @@ Reply with ONLY an updated summary merging old and new info about {display_name}
     try:
         updated_notes = chat_completion(
             messages=[{"role": "user", "content": extraction_prompt}],
-            max_tokens=500,
-            temperature=0.3,
+            max_tokens=MEMORY_MAX_TOKENS,
+            temperature=MEMORY_TEMPERATURE,
         )
         if updated_notes:
             memory[user_id] = {"display_name": display_name, "notes": updated_notes}

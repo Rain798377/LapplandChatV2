@@ -2,7 +2,12 @@ import re
 import base64
 import random
 import httpx
-from core.config import SYSTEM_PROMPT, MOODS, MAX_HISTORY, MODEL
+from core.config import (
+    SYSTEM_PROMPT, MOODS, MAX_HISTORY, MODEL,
+    REPLY_MAX_TOKENS, REPLY_TEMPERATURE,
+    VISION_MAX_TOKENS, VISION_TEMPERATURE,
+    IDLE_MAX_TOKENS, IDLE_TEMPERATURE,
+)
 from core.llm import chat_completion, VISION_PROVIDER_CHAIN
 from core.memory import get_user_memory_string
 
@@ -84,8 +89,8 @@ def get_ai_response(
         reply = chat_completion(
             messages=vision_messages,
             model=VISION_MODEL,
-            max_tokens=400,
-            temperature=0.9,
+            max_tokens=VISION_MAX_TOKENS,
+            temperature=VISION_TEMPERATURE,
             providers=VISION_PROVIDER_CHAIN,
         )
         reply = re.sub(r'^[^:]{1,50}:\s*', '', reply).strip() or _EMPTY_REPLY_FALLBACK
@@ -107,8 +112,8 @@ def get_ai_response(
         model=MODEL,
         # core/llm.py sends reasoning_effort="none" for MODEL, so no hidden
         # reasoning tokens eat into this budget -- back to a plain reply size.
-        max_tokens=300,
-        temperature=0.9,
+        max_tokens=REPLY_MAX_TOKENS,
+        temperature=REPLY_TEMPERATURE,
     )
     reply = re.sub(r'^[^:]{1,50}:\s*', '', reply).strip() or _EMPTY_REPLY_FALLBACK
     histories[channel_id].append({"role": "assistant", "content": reply})
@@ -147,8 +152,8 @@ def get_idle_message(channel_id: int, memory: dict) -> str:
             {"role": "user", "content": _IDLE_INSTRUCTION},
         ],
         model=MODEL,
-        max_tokens=100,
-        temperature=0.9,
+        max_tokens=IDLE_MAX_TOKENS,
+        temperature=IDLE_TEMPERATURE,
     )
     reply = re.sub(r'^[^:]{1,50}:\s*', '', reply).strip() or _EMPTY_REPLY_FALLBACK
     histories[channel_id].append({"role": "assistant", "content": reply})
