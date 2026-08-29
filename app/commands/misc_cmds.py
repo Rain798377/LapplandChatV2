@@ -53,10 +53,10 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
     async def check_mood(interaction: discord.Interaction):
         await interaction.response.send_message(f"I'm currently feeling {ai.current_mood}!")
 
-    @tree.command(name="change_mood", description="Change the bot's mood (owner only)")
+    @tree.command(name="change_mood", description="Change the bot's mood")
     @app_commands.describe(
         mood="Pick a preset mood",
-        custom_mood="Or set a custom mood not in the preset list",
+        custom_mood="Set a custom mood not in the preset list (owner only)",
     )
     @app_commands.choices(mood=[
         app_commands.Choice(name=m.capitalize(), value=m) for m in MOODS
@@ -66,10 +66,10 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
         mood: app_commands.Choice[str] = None,
         custom_mood: str = None,
     ):
-        if interaction.user.id != BOT_OWNER_ID:
-            await interaction.response.send_message("You're not the owner.", ephemeral=True)
-            return
         if custom_mood:
+            if interaction.user.id != BOT_OWNER_ID:
+                await interaction.response.send_message("Only the owner can set a custom mood.", ephemeral=True)
+                return
             new_mood = custom_mood
         elif mood is not None:
             new_mood = mood.value
