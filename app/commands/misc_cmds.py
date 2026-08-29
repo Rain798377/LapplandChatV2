@@ -170,9 +170,11 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
             await interaction.followup.send("Command timed out.", ephemeral=True)
             return
         output = stdout.decode() + stderr.decode()
-        if len(output) > 1900:
-            output = output[:1900] + "\n...[output truncated]"
-        await interaction.followup.send(f"Output of `{command}`:\n```{output}```")
+        prefix, suffix, truncated_note = f"Output of `{command}`:\n```", "```", "\n...[output truncated]"
+        budget = 2000 - len(prefix) - len(suffix)  # Discord's hard 2000-char message cap
+        if len(output) > budget:
+            output = output[:budget - len(truncated_note)] + truncated_note
+        await interaction.followup.send(f"{prefix}{output}{suffix}")
 
     @tree.command(name="time", description="Get the current server time")
     @app_commands.allowed_installs(guilds=True, users=True)

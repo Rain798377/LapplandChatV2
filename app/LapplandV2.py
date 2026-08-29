@@ -363,7 +363,7 @@ async def on_message(message: discord.Message):
                 chance = REPLY_CHANCE_AMBIENT
 
         if random.random() > chance:
-            add_to_history(message.channel.id, message.author.display_name, content)
+            add_to_history(message.channel.id, message.author.display_name, message.author.id, content)
             if len(content.split()) > 5 and random.random() < 0.75:
                 await asyncio.to_thread(
                     update_memory_from_conversation,
@@ -384,6 +384,7 @@ async def on_message(message: discord.Message):
                 message.channel.id,
                 content,
                 message.author.display_name,
+                message.author.id,
                 memory,
                 image_urls=image_urls if has_images else None,
             )

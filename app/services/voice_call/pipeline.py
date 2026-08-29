@@ -60,7 +60,7 @@ async def handle_utterance(guild_id: int, member: discord.Member, pcm_48k_stereo
         channel_id = session["text_channel_id"]
         memory = load_memory()
         maybe_shift_mood()
-        reply = get_ai_response(channel_id, transcript, member.display_name, memory)
+        reply = get_ai_response(channel_id, transcript, member.display_name, member.id, memory)
         print(f"[voice_call] reply: {reply}", flush=True)
         if len(transcript.split()) > 5:
             update_memory_from_conversation(

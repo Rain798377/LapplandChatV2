@@ -3,7 +3,7 @@ import base64
 import random
 import httpx
 from core.config import (
-    SYSTEM_PROMPT, MOODS, MAX_HISTORY, MODEL,
+    SYSTEM_PROMPT, MOODS, MAX_HISTORY, MODEL, BOT_OWNER_ID,
     REPLY_MAX_TOKENS, REPLY_TEMPERATURE,
     VISION_MAX_TOKENS, VISION_TEMPERATURE,
     IDLE_MAX_TOKENS, IDLE_TEMPERATURE,
@@ -25,6 +25,17 @@ VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 # "" and Discord's API 400s on message.reply("") (error 50006). Substitute
 # this instead of ever returning an empty reply.
 _EMPTY_REPLY_FALLBACK = "..."
+
+
+def _speaker_tag(username: str, user_id: int) -> str:
+    """Prefix used for a speaker's lines in the history sent to the LLM.
+    Display names are just Discord nicknames -- anyone can rename themselves
+    to impersonate the owner. Only the owner's messages get an explicit
+    "(id:...)" tag so SYSTEM_PROMPT has something unspoofable to match on;
+    everyone else is just their display name, as before."""
+    if user_id == BOT_OWNER_ID:
+        return f"{username} (id:{BOT_OWNER_ID})"
+    return username
 
 
 def maybe_shift_mood() -> bool:
@@ -53,6 +64,7 @@ def get_ai_response(
     channel_id: int,
     user_message: str,
     username: str,
+    user_id: int,
     memory: dict,
     image_urls: list[str] | None = None,
 ) -> str:
@@ -63,6 +75,8 @@ def get_ai_response(
         mood=current_mood,
         user_memories=get_user_memory_string(memory)
     )
+
+    tag = _speaker_tag(username, user_id)
 
     # ── Vision path (message has images) ──────────────────────────────────────
     if image_urls:
@@ -77,7 +91,7 @@ def get_ai_response(
             except Exception as e:
                 print(f"[vision] failed to fetch image: {e}", flush=True)
 
-        text_part = f"{username}: {user_message}" if user_message else f"{username} sent an image"
+        text_part = f"{tag}: {user_message}" if user_message else f"{tag} sent an image"
         content_blocks.append({"type": "text", "text": text_part})
 
         vision_messages = [
@@ -103,7 +117,7 @@ def get_ai_response(
         return reply
 
     # ── Normal text path ───────────────────────────────────────────────────────
-    histories[channel_id].append({"role": "user", "content": f"{username}: {user_message}"})
+    histories[channel_id].append({"role": "user", "content": f"{tag}: {user_message}"})
     if len(histories[channel_id]) > MAX_HISTORY:
         histories[channel_id] = histories[channel_id][-MAX_HISTORY:]
 
@@ -162,9 +176,10 @@ def get_idle_message(channel_id: int, memory: dict) -> str:
     return reply
 
 
-def add_to_history(channel_id: int, username: str, content: str):
+def add_to_history(channel_id: int, username: str, user_id: int, content: str):
     if channel_id not in histories:
         histories[channel_id] = []
-    histories[channel_id].append({"role": "user", "content": f"{username}: {content}"})
+    tag = _speaker_tag(username, user_id)
+    histories[channel_id].append({"role": "user", "content": f"{tag}: {content}"})
     if len(histories[channel_id]) > MAX_HISTORY:
         histories[channel_id] = histories[channel_id][-MAX_HISTORY:]
