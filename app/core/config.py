@@ -1,4 +1,5 @@
 import os
+import secrets
 
 from dotenv import load_dotenv
 
@@ -115,6 +116,12 @@ MAX_HISTORY           = 30
 # floor.
 MAX_MEMORY_TOKENS     = 4000
 
+# Bot profile config -- avatar photo + a short bio line, admin-editable via
+# the WebUI admin panel (see core/bot_profile.py, WebUI/admin.html). Shared
+# by everyone (unlike a user's own avatar, which is per-browser
+# localStorage) since it's the bot's presentation, not any one viewer's.
+BOT_PROFILE_FILE      = "data/bot_profile.json"
+
 # WebUI config -- this branch's interface to the bot is the local HTML/JS
 # client in WebUI/ (served + driven by webui_server.py) instead of Discord.
 # Multiple real accounts now use this (see WEBUI auth config below) -- the
@@ -126,6 +133,55 @@ MAX_MEMORY_TOKENS     = 4000
 WEBUI_HOST      = os.environ.get("WEBUI_HOST", "127.0.0.1")
 WEBUI_PORT      = int(os.environ.get("WEBUI_PORT", "9021"))
 WEBUI_DIR       = "./WebUI"  # relative to cwd (app/), like the other *_FILE paths above
+# Serves the whole app under this URL prefix (e.g. "/lapplandchat") instead
+# of the domain root -- for a reverse proxy (see webui_server.py's p())
+# that forwards a whole domain to this server rather than carving out a
+# specific location block for it. Empty (the default) serves at "/", same
+# as before this existed. Every route is registered through p(path), and
+# every frontend fetch()/href/redirect uses a path *without* a leading "/"
+# (e.g. "api/chat", not "/api/chat") so the browser resolves it relative to
+# whatever page it's on instead of the domain root -- that's what actually
+# makes the prefix work end to end, not just the route registration side.
+# Must not have a trailing slash (WEBUI_BASE_PATH + "/x", not "//x").
+WEBUI_BASE_PATH = os.environ.get("WEBUI_BASE_PATH", "").rstrip("/")
+
+# Hidden "gate" in front of the WebUI's own root page (see webui_server.py's
+# GET p("/") and POST p("/gate"), WebUI/cover.html). By default GET p("/")
+# serves a benign static placeholder instead of the real chat shell; typing
+# WEBUI_GATE_PASSPHRASE into the hidden "~"-triggered terminal on that page
+# sets a signed cookie that flips root over to actually serving index.html.
+#
+# This is obscurity, not authentication -- core/auth.py's real login is
+# still what actually gates chat data and every /api/* route either way;
+# this only decides which static HTML a bare GET / happens to return, so
+# the app's existence isn't obvious to a casual visitor or scanner hitting
+# the domain. Don't treat WEBUI_GATE_SECRET or the passphrase as a real
+# security boundary.
+WEBUI_GATE_PASSPHRASE = os.environ.get("WEBUI_GATE_PASSPHRASE", "chat")
+WEBUI_GATE_COOKIE     = "gate"
+# Signs the gate cookie so it can't just be forged/guessed -- generated
+# fresh each process start if WEBUI_GATE_SECRET isn't set via env, which is
+# safe (no hardcoded default to leak) but means restarting the process logs
+# everyone's gate cookie out. Set WEBUI_GATE_SECRET yourself for a stable
+# secret that survives restarts.
+WEBUI_GATE_SECRET = os.environ.get("WEBUI_GATE_SECRET") or secrets.token_hex(32)
+# A hostname that skips the gate entirely and always serves the real chat
+# shell -- e.g. "lappland.arkendpoint.dev", a subdomain nobody stumbles onto
+# by accident, as a direct bypass alongside the "type the passphrase" route
+# through whatever public/root domain also reaches this same server. Empty
+# (the default) means every hostname is gated the same way.
+WEBUI_GATE_BYPASS_HOST = os.environ.get("WEBUI_GATE_BYPASS_HOST", "").lower()
+# Where "Return to homepage" (index.html's header) sends you -- an absolute
+# URL, since a relative "./" only ever lands back on whatever host you're
+# currently on. That's a no-op on WEBUI_GATE_BYPASS_HOST specifically: that
+# host always serves the real chat shell regardless of the gate cookie (see
+# is_valid()'s bypass check in webui_server.py's index()), so clearing the
+# cookie there and reloading the same host just shows chat again -- there's
+# no cover page to return to on that host by design. Point this at the
+# actual gated domain instead, e.g. "https://arkendpoint.dev/". Empty (the
+# default) falls back to relative "./", fine for a single-host deployment.
+WEBUI_PUBLIC_HOMEPAGE = os.environ.get("WEBUI_PUBLIC_HOMEPAGE", "")
+
 # Negative sentinel so it can never collide with a real Discord channel
 # snowflake (always positive) -- every web session shares one conversation,
 # keyed into the same core.ai.histories dict Discord uses.
@@ -137,6 +193,18 @@ WEBUI_CHANNEL_ID = -1
 # replies; every channel's messages are shared/persisted the same way.
 WEBUI_CHANNELS     = ("general", "bug-reports", "feature-suggestions", "off-topic")
 WEBUI_BOT_CHANNEL  = "general"
+
+# Discord webhook notification -- when someone posts in one of these WebUI
+# channels, the message is relayed into Discord via a channel webhook (see
+# core/discord_notify.py) so BOT_OWNER_ID sees it without watching the WebUI.
+# A webhook is used instead of going through the actual Discord bot because
+# this deployment runs independently of the Discord bot process (see the
+# load_dotenv comment above) -- a webhook is just an HTTP POST, no bot
+# process required on this end. Add DISCORD_NOTIFY_WEBHOOK_URL to
+# .env-webui yourself (a webhook URL from the target Discord channel's
+# Integrations settings); leaving it unset just disables notifications.
+DISCORD_NOTIFY_WEBHOOK_URL = os.environ.get("DISCORD_NOTIFY_WEBHOOK_URL")
+WEBUI_NOTIFY_CHANNELS      = ("bug-reports", "feature-suggestions")
 
 # WebUI auth config -- SQLite-backed accounts (see core/auth.py) behind
 # WebUI/login.html (Nocturne design), and shared chat storage (see
@@ -165,6 +233,13 @@ ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME")
 ADMIN_EMAIL    = os.environ.get("ADMIN_EMAIL")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
 ADMIN_USER_ID  = "1337"
+
+# Static invite token required to create a new account (checked in
+# webui_server.py's /api/register against whatever login.html's "Invite
+# code" field submits) -- a simple gate against public/bot signups, on top
+# of password auth. Empty (unset) disables the check entirely, same
+# "leaving it unset disables the feature" convention as ADMIN_* above.
+WEBUI_REGISTRATION_TOKEN = os.environ.get("WEBUI_REGISTRATION_TOKEN", "")
 
 # Downloader config
 MAX_FILE_SIZE_MB      = 25

@@ -5,6 +5,8 @@ services:
     container_name: lappland-webui
     restart: unless-stopped
     ports:
+      # Reached both on the LAN directly and via Nginx Proxy Manager, which
+      # proxies to this NAS's own LAN IP on this port -- see NPM setup notes.
       - "9021:9021"
     volumes:
       - ./app:/app

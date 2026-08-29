@@ -26,11 +26,6 @@
         </div>
       </div>
 
-      <div style="display: flex; flex-direction: column; gap: 2px;">
-        <div style="font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: color-mix(in srgb, var(--color-text) 45%, transparent); padding: 0 8px 6px;">Here</div>
-        <div id="memberList" style="display: flex; flex-direction: column; gap: 2px;"></div>
-      </div>
-
       <button id="resetBtn" class="btn btn-secondary" style="display: none; justify-content: flex-start; width: 100%; font-size: 13px;"></button>
     </div>
 
@@ -53,10 +48,11 @@
       </div>
       <div style="width: 1px; height: 22px; background: var(--color-divider);"></div>
       <div id="statusLine" style="flex: 1; min-width: 0; font-size: 12px; color: color-mix(in srgb, var(--color-text) 65%, transparent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"></div>
+      <button id="gateExitBtn" class="btn btn-ghost" style="font-size: 12px; padding: 5px 12px; color: color-mix(in srgb, var(--color-text) 60%, transparent);" title="Hides this page behind the cover page again -- your session stays signed in.">&larr; homepage</button>
       <button id="detailsBtn" class="btn btn-secondary" style="font-size: 12px; padding: 5px 12px;">details</button>
     </header>
 
-    <div style="flex: 1; min-width: 0; display: flex; overflow: hidden;">
+    <div style="flex: 1; min-width: 0; display: flex; overflow: hidden; position: relative;">
       <div class="scroll" id="messageScroll" style="flex: 1; min-width: 0; overflow-y: auto; padding: 26px 20px 8px;">
         <div style="max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; gap: 2px;">
 
@@ -68,7 +64,7 @@
           <div id="messageList"></div>
 
           <div id="typingRow" style="display: none; gap: 12px; padding: 7px 12px 7px 8px;">
-            <div style="width: 38px; flex: none;"><div id="typingAvatar"></div></div>
+            <div style="width: 46px; flex: none;"><div id="typingAvatar"></div></div>
             <div style="display: flex; align-items: center; gap: 10px;">
               <span id="typingLabel" style="font-size: 13px; color: color-mix(in srgb, var(--color-text) 65%, transparent);"></span>
               <span style="display: flex; gap: 4px;">
@@ -83,7 +79,11 @@
         </div>
       </div>
 
-      <aside id="infoPanel" class="scroll" style="width: 272px; flex: none; overflow-y: auto; border-left: 1px solid var(--color-divider); background: var(--color-surface); padding: 18px 16px; display: flex; flex-direction: column; gap: 22px;">
+      <!-- Floating popover (not part of the flex layout -- see position:relative on
+           its parent above) anchored under the header's "details" button, instead of
+           a permanent docked column, so it doesn't compete with membersPanel for
+           width. Shown/hidden the same way it always was (state.infoOpen). -->
+      <div id="infoPanel" class="scroll elev-lg" style="display: none; position: absolute; top: 12px; right: 12px; width: 300px; max-height: calc(100% - 24px); overflow-y: auto; background: var(--color-surface); border: 1px solid var(--color-divider); border-radius: var(--radius-lg); padding: 18px 16px; flex-direction: column; gap: 22px; z-index: 30;">
         <div style="display: flex; flex-direction: column; gap: 10px;">
           <div style="font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--color-accent);">Runtime</div>
           <div id="runtimeList" style="display: flex; flex-direction: column; gap: 8px;"></div>
@@ -92,17 +92,41 @@
           <div style="font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--color-accent);">About</div>
           <div id="aboutText" style="font-size: 13px; color: color-mix(in srgb, var(--color-text) 70%, transparent); background: var(--color-bg); border: 1px solid var(--color-divider); border-radius: 8px; padding: 11px; line-height: 1.5;"></div>
         </div>
+      </div>
+
+      <aside id="membersPanel" class="scroll" style="width: 306px; flex: none; overflow-y: auto; border-left: 1px solid var(--color-divider); background: var(--color-surface); padding: 21px 17px; display: flex; flex-direction: column; gap: 23px;">
+        <div style="display: flex; flex-direction: column; gap: 9px;">
+          <div style="font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--color-accent);">Here &mdash; <span id="onlineCount"></span></div>
+          <div id="onlineMembersList" style="display: flex; flex-direction: column; gap: 4px;"></div>
+        </div>
+        <div id="offlineMembersSection" style="display: none; flex-direction: column; gap: 9px;">
+          <div style="font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; color: color-mix(in srgb, var(--color-text) 45%, transparent);">Offline &mdash; <span id="offlineCount"></span></div>
+          <div id="offlineMembersList" style="display: flex; flex-direction: column; gap: 4px;"></div>
+        </div>
       </aside>
     </div>
 
     <div style="flex: none; padding: 4px 20px 20px; background: var(--color-bg);">
-      <div style="max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; gap: 7px;">
+      <div style="max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; gap: 7px; position: relative;">
+        <div id="slashPopup" class="scroll elev-md" style="display: none; position: absolute; left: 0; right: 0; bottom: 100%; margin-bottom: 8px; max-height: 260px; overflow-y: auto; background: var(--color-surface); border: 1px solid var(--color-divider); border-radius: 10px; padding: 6px; z-index: 20;">
+          <div id="slashPopupHeader" style="padding: 6px 10px 4px; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: color-mix(in srgb, var(--color-text) 45%, transparent);">Commands</div>
+          <div id="slashPopupList"></div>
+        </div>
+
+        <div id="paramBar" style="display: none; flex-direction: column; gap: 6px; background: var(--color-surface); border: 1px solid var(--color-divider); border-radius: 10px; padding: 10px 12px;">
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px;">
+            <div id="paramBarTitle" style="font-family: var(--font-heading); font-size: 13px; font-weight: 600; color: var(--color-accent);"></div>
+            <button id="paramBarClose" class="btn btn-icon btn-ghost" style="width: 22px; height: 22px; font-size: 14px; color: color-mix(in srgb, var(--color-text) 50%, transparent);">&times;</button>
+          </div>
+          <div id="paramBoxes" style="display: flex; flex-wrap: wrap; gap: 8px;"></div>
+        </div>
+
         <div class="composer-box" style="display: flex; align-items: flex-end; gap: 10px; background: var(--color-surface); border: 1px solid var(--color-divider); border-radius: 10px; padding: 10px 10px 10px 14px;">
           <textarea id="draftInput" rows="1" placeholder="" style="flex: 1; min-width: 0; resize: none; background: transparent; border: 0; outline: none; color: var(--color-text); font-size: 15px; line-height: 1.5; max-height: 160px; padding: 4px 0;"></textarea>
           <button id="sendBtn" class="send-btn" style="flex: none; cursor: default; font-family: var(--font-heading); font-size: 14px; font-weight: 500; padding: 8px 16px; border-radius: 8px; background: transparent; border: 1px solid var(--color-divider); color: color-mix(in srgb, var(--color-text) 35%, transparent);">Send</button>
         </div>
         <div style="display: flex; justify-content: space-between; gap: 12px; font-size: 10.5px; color: color-mix(in srgb, var(--color-text) 40%, transparent);">
-          <span>Enter to send &middot; Shift+Enter for a new line</span>
+          <span>Enter to send &middot; Shift+Enter for a new line &middot; / for commands</span>
           <span id="charCount"></span>
         </div>
       </div>
@@ -123,7 +147,10 @@
           <div style="font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--color-accent);">Account</div>
           <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
             <span id="accountLine" style="display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--color-text);"></span>
-            <button id="logoutBtn" class="btn btn-ghost" style="font-size: 12.5px; color: color-mix(in srgb, var(--color-text) 65%, transparent);">Log out</button>
+            <div style="display: flex; gap: 8px;">
+              <a id="adminPanelLink" href="admin.html" class="btn btn-secondary" style="display: none; font-size: 12.5px;">Admin panel</a>
+              <button id="logoutBtn" class="btn btn-ghost" style="font-size: 12.5px; color: color-mix(in srgb, var(--color-text) 65%, transparent);">Log out</button>
+            </div>
           </div>
         </section>
 
@@ -136,7 +163,7 @@
                 <button id="pickPhotoBtn" class="btn btn-secondary" style="font-size: 12.5px;">Upload photo</button>
                 <button id="clearPhotoBtn" class="btn btn-ghost" style="font-size: 12.5px; color: color-mix(in srgb, var(--color-text) 65%, transparent);">Remove</button>
               </div>
-              <div style="font-size: 10.5px; color: color-mix(in srgb, var(--color-text) 45%, transparent);">Stored in this browser only.</div>
+              <div style="font-size: 10.5px; color: color-mix(in srgb, var(--color-text) 45%, transparent);">Saved to your account -- follows you to any device.</div>
             </div>
           </div>
           <input type="file" accept="image/*" id="photoInput" style="display: none;" />
@@ -145,6 +172,22 @@
             <span style="display: block; font-size: 12px; margin-bottom: 5px; color: color-mix(in srgb, var(--color-text) 70%, transparent);">Avatar colour</span>
             <div id="swatchList" style="display: flex; gap: 8px; flex-wrap: wrap;"></div>
           </div>
+
+          <div class="field">
+            <span style="display: block; font-size: 12px; margin-bottom: 5px; color: color-mix(in srgb, var(--color-text) 70%, transparent);">Banner</span>
+            <div id="bannerPreview" style="width: 100%; height: 80px; border-radius: var(--radius-lg); background-color: var(--color-bg); background-size: cover; background-position: center; border: 1px solid var(--color-divider); margin-bottom: 8px;"></div>
+            <div style="display: flex; gap: 8px;">
+              <button id="pickBannerBtn" class="btn btn-secondary" style="font-size: 12.5px;">Upload banner</button>
+              <button id="clearBannerBtn" class="btn btn-ghost" style="font-size: 12.5px; color: color-mix(in srgb, var(--color-text) 65%, transparent);">Remove</button>
+            </div>
+          </div>
+          <input type="file" accept="image/*" id="bannerInput" style="display: none;" />
+
+          <label class="field">
+            <span style="display: block; font-size: 12px; margin-bottom: 5px; color: color-mix(in srgb, var(--color-text) 70%, transparent);">Description</span>
+            <textarea class="input" id="descInput" rows="2" placeholder="Shown on your profile card when someone clicks your name (optional)"></textarea>
+          </label>
+          <button id="saveDescBtn" class="btn btn-secondary" style="align-self: flex-start; font-size: 12.5px;">Save description</button>
         </section>
 
         <section style="display: flex; flex-direction: column; gap: 10px;">
@@ -163,8 +206,28 @@
     </div>
   </div>
 
+  <div id="profileBackdrop" class="dialog-backdrop" style="display: none; z-index: 45;">
+    <!-- ~15% bigger than a standard .dialog (360px/100px/etc base) -- this
+         card is looked at, not filled out, so it earns a bit more presence
+         than the form-style dialogs elsewhere in this app. -->
+    <div class="dialog elev-lg" style="width: min(415px, 100%); padding: 0; overflow: hidden; animation: pop 0.16s ease-out;">
+      <div id="profileBanner" style="height: 115px; background-color: var(--color-bg); background-size: cover; background-position: center;"></div>
+      <div style="padding: 0 23px 23px;">
+        <div id="profileAvatar"></div>
+        <div id="profileName" style="display: flex; align-items: center; gap: 9px; font-family: var(--font-heading); font-size: 20.5px; font-weight: 600; color: var(--color-neutral-100); margin-top: 11px;"></div>
+        <div id="profileUserId" style="display: none; font-size: 12.5px; font-family: monospace; color: color-mix(in srgb, var(--color-text) 45%, transparent); margin-top: 3px;"></div>
+        <div id="profileDesc" style="font-size: 15px; color: color-mix(in srgb, var(--color-text) 75%, transparent); white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 9px;"></div>
+        <button id="profileEditBtn" class="btn btn-secondary" style="display: none; font-size: 14px; margin-top: 16px;">Edit profile</button>
+      </div>
+      <div style="padding: 16px 23px; border-top: 1px solid var(--color-divider); display: flex; justify-content: flex-end;">
+        <button id="profileCloseBtn" class="btn btn-ghost" style="font-size: 14px;">Close</button>
+      </div>
+    </div>
+  </div>
+
 </div>
 
+<script src="./cropper.js"></script>
 <script src="./chat.js"></script>
 </body>
 </html>

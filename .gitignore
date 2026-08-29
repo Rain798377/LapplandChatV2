@@ -20,3 +20,8 @@ input.mp4
 app/modal_imagegen/redeploy.ps1
 /app/data
 data/webui.db
+app/WebUI/assets/backdrops/bg-2.png
+app/WebUI/assets/backdrops/bg-3.png
+app/WebUI/assets/backdrops/bg-4.png
+app/WebUI/assets/backdrops/bg-5.png
+app/WebUI/assets/backdrops/bg-6.png

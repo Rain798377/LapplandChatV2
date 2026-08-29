@@ -13,6 +13,8 @@
     email: document.getElementById("email"),
     usernameField: document.getElementById("usernameField"),
     username: document.getElementById("username"),
+    tokenField: document.getElementById("tokenField"),
+    regToken: document.getElementById("regToken"),
     password: document.getElementById("password"),
     confirmField: document.getElementById("confirmField"),
     confirm: document.getElementById("confirm"),
@@ -44,6 +46,7 @@
     els.identifierField.style.display = isRegister ? "none" : "block";
     els.emailField.style.display = isRegister ? "block" : "none";
     els.usernameField.style.display = isRegister ? "block" : "none";
+    els.tokenField.style.display = isRegister ? "block" : "none";
     els.confirmField.style.display = isRegister ? "block" : "none";
     els.trackingField.style.display = isRegister ? "flex" : "none";
     els.password.autocomplete = isRegister ? "new-password" : "current-password";
@@ -56,6 +59,7 @@
     e.preventDefault();
     mode = mode === "login" ? "register" : "login";
     els.confirm.value = "";
+    els.regToken.value = "";
     els.trackingConsent.checked = false;
     showError("");
     showNotice("");
@@ -73,9 +77,10 @@
     if (mode === "register") {
       const email = els.email.value.trim();
       const username = els.username.value.trim();
+      const token = els.regToken.value.trim();
 
-      if (!email || !username || !password) {
-        showError("Enter your email, a username, and a password.");
+      if (!email || !username || !password || !token) {
+        showError("Enter your email, a username, a password, and the invite code.");
         showNotice("");
         return;
       }
@@ -94,7 +99,7 @@
         showNotice("");
         return;
       }
-      payload = { identifier: email, username: username, email: email, password: password };
+      payload = { identifier: email, username: username, email: email, password: password, token: token };
     } else {
       const id = els.identifier.value.trim();
       if (!id || !password) {
@@ -105,7 +110,7 @@
       payload = { identifier: id, username: null, email: null, password: password };
     }
 
-    const endpoint = mode === "register" ? "/api/register" : "/api/login";
+    const endpoint = mode === "register" ? "api/register" : "api/login";
     setBusy(true);
     showError("");
     showNotice("");
@@ -132,7 +137,7 @@
             showNotice("Account created. You can sign in now.");
             return;
           }
-          window.location.href = "/";
+          window.location.href = "./";
           return;
         }
         setBusy(false);

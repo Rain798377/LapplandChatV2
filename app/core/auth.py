@@ -86,6 +86,76 @@ def init_db() -> None:
                 created_at TEXT NOT NULL
             )
         """)
+        # Profile fields (avatar/banner/hue/description) -- added after the
+        # table already existed for some databases, so each is its own
+        # best-effort ALTER, same pattern as chat_store.py's "edited"
+        # column. These used to live in the browser's own localStorage
+        # (per-browser, never followed you to a different device); now
+        # they're tied to the account instead, so every device sees the
+        # same profile once you're signed in there.
+        for column, decl in (
+            ("avatar", "TEXT NOT NULL DEFAULT ''"),
+            ("banner", "TEXT NOT NULL DEFAULT ''"),
+            ("hue", "INTEGER"),
+            ("description", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            try:
+                conn.execute(f"ALTER TABLE users ADD COLUMN {column} {decl}")
+            except sqlite3.OperationalError:
+                pass
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ── profile (avatar/banner/hue/description) ─────────────────────────────
+
+def get_profile(user_id: str) -> dict:
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT avatar, banner, hue, description FROM users WHERE user_id = ?", (user_id,),
+        ).fetchone()
+        if not row:
+            return {"avatar": "", "banner": "", "hue": None, "description": ""}
+        return dict(row)
+    finally:
+        conn.close()
+
+
+_UNSET = object()  # distinguishes "caller didn't pass this" from "caller passed None"
+
+
+def update_profile(
+    user_id: str,
+    avatar=_UNSET,
+    banner=_UNSET,
+    hue=_UNSET,
+    description=_UNSET,
+) -> None:
+    """Partial update -- an argument left at its _UNSET default is left
+    untouched in the row. Pass None for hue to explicitly clear it back to
+    "derive from username" (see chat.js's hueForName); pass "" for
+    avatar/banner/description to explicitly clear those. The caller
+    (webui_server.py's /api/profile) uses Pydantic's model_fields_set to
+    only forward fields that were actually present in the request body, so
+    "omitted" and "sent as null" stay distinguishable all the way through."""
+    fields, params = [], []
+    if avatar is not _UNSET:
+        fields.append("avatar = ?"); params.append(avatar)
+    if banner is not _UNSET:
+        fields.append("banner = ?"); params.append(banner)
+    if hue is not _UNSET:
+        fields.append("hue = ?"); params.append(hue)
+    if description is not _UNSET:
+        fields.append("description = ?"); params.append(description)
+    if not fields:
+        return
+    params.append(user_id)
+
+    conn = _connect()
+    try:
+        conn.execute(f"UPDATE users SET {', '.join(fields)} WHERE user_id = ?", params)
         conn.commit()
     finally:
         conn.close()
@@ -156,6 +226,35 @@ def create_user(username: str | None, password: str, email: str | None = None) -
                 raise EmailTakenError(email) from e
             raise
         return user_id, username
+    finally:
+        conn.close()
+
+
+def list_users() -> list[sqlite3.Row]:
+    """All registered accounts, newest first -- for the admin panel
+    (webui_server.py's /api/admin/users). Never returns password_hash to the
+    caller's JSON response (webui_server.py picks the fields it serializes)."""
+    conn = _connect()
+    try:
+        return conn.execute("SELECT * FROM users ORDER BY created_at DESC").fetchall()
+    finally:
+        conn.close()
+
+
+def delete_user(user_id: str) -> bool:
+    """Removes the account and any sessions for it (so a signed-in browser
+    is kicked out rather than left holding a session that joins to nothing --
+    see get_user_by_session's JOIN). Returns False if no such user existed.
+    Past chat messages are left alone -- chat_store rows carry their own
+    username at time of posting (see chat_store.py), so they still render
+    fine with no author account behind them, same as a message from a
+    since-renamed user."""
+    conn = _connect()
+    try:
+        conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        cur = conn.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+        conn.commit()
+        return cur.rowcount > 0
     finally:
         conn.close()
 

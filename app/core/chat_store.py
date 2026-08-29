@@ -108,6 +108,17 @@ def get_messages(channel: str, since_id: int = 0, limit: int = 200) -> list[sqli
         conn.close()
 
 
+def message_counts() -> dict[str, int]:
+    """channel -> total message count, for the admin panel's channel list
+    (webui_server.py's /api/admin/overview)."""
+    conn = _connect()
+    try:
+        rows = conn.execute("SELECT channel, COUNT(*) AS n FROM messages GROUP BY channel").fetchall()
+        return {row["channel"]: row["n"] for row in rows}
+    finally:
+        conn.close()
+
+
 def clear_channel(channel: str) -> None:
     conn = _connect()
     try:
@@ -125,10 +136,30 @@ def get_message(message_id: int) -> sqlite3.Row | None:
         conn.close()
 
 
-def edit_message(message_id: int, body: str) -> sqlite3.Row | None:
+def edit_message(
+    message_id: int, body: str, image: str | None = None, stats: str | None = None, mark_edited: bool = True,
+) -> sqlite3.Row | None:
+    """image/stats are only written when explicitly passed -- omitting them
+    (the default) leaves whatever's already stored alone. mark_edited=True
+    (the default) is for a real user/admin edit via /api/messages/{id}/edit;
+    webui_server.py's /imagine progress updates pass mark_edited=False since
+    that's the bot filling in its own not-yet-finished message, not
+    something a person edited, so it shouldn't pick up an "(edited)" tag."""
+    fields = ["body = ?"]
+    params: list = [body]
+    if image is not None:
+        fields.append("image = ?")
+        params.append(image)
+    if stats is not None:
+        fields.append("stats = ?")
+        params.append(stats)
+    if mark_edited:
+        fields.append("edited = 1")
+    params.append(message_id)
+
     conn = _connect()
     try:
-        conn.execute("UPDATE messages SET body = ?, edited = 1 WHERE id = ?", (body, message_id))
+        conn.execute(f"UPDATE messages SET {', '.join(fields)} WHERE id = ?", params)
         conn.commit()
         return conn.execute("SELECT * FROM messages WHERE id = ?", (message_id,)).fetchone()
     finally:

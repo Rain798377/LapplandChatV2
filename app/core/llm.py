@@ -550,6 +550,21 @@ def is_provider_disabled(name: str) -> bool:
     return _provider_disabled.get(name, True)
 
 
+def get_provider_status() -> dict[str, dict]:
+    """Per-provider snapshot for the admin panel (webui_server.py) --
+    disabled (bad/missing key), cooldownSeconds (>0 while skipped after a
+    429/5xx), and whether it's the current admin-forced pin."""
+    now = time.time()
+    return {
+        name: {
+            "disabled": _provider_disabled[name],
+            "cooldownSeconds": max(0.0, _provider_cooldown_until[name] - now),
+            "forced": name == _forced_provider,
+        }
+        for name in DEFAULT_PROVIDER_CHAIN
+    }
+
+
 def chat_completion(
     messages: list[dict],
     model: str = MODEL,

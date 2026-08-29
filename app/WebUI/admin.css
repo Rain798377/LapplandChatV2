@@ -1,0 +1,16 @@
+html, body { margin: 0; padding: 0; min-height: 100%; }
+* { box-sizing: border-box; }
+body { background: var(--color-bg); color: var(--color-text); font-family: var(--font-body); font-size: 15px; }
+a { color: var(--color-accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+textarea, input, select, button { font-family: inherit; }
+.table td, .table th { vertical-align: middle; }
+.stat {
+  display: flex; flex-direction: column; gap: 3px;
+  padding: 10px 12px; border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-bg) 60%, transparent);
+  border: 1px solid var(--color-divider);
+}
+.stat-label { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: color-mix(in srgb, var(--color-text) 50%, transparent); }
+.stat-value { font-size: 15px; font-family: var(--font-heading); font-weight: 500; }
+.row-btn { font-size: 12.5px; padding: 4px 10px; }

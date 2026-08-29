@@ -18,8 +18,9 @@ skipped rather than silently missing):
                                           web UI has exactly one conversation
                                           and is always listening.
   - /quote, /random meme, "Make Quote" -- the chat can render images now
-                                          (see _run_imagine below), but these
-                                          weren't asked for -- separate task.
+                                          (see /imagine, /imagine_anime in
+                                          webui_server.py), but these weren't
+                                          asked for -- separate task.
   - /terminal                          -- arbitrary shell execution. Discord
                                           gates it to BOT_OWNER_ID; this
                                           server has no auth, and any web
@@ -29,36 +30,44 @@ skipped rather than silently missing):
                                           -- too risky to expose unauthenticated.
 
 /change_mood, /ai-provider, /memory wipe-all are effectively admin actions on
-Discord (guild-admin gated) -- ported here ungated, since the only person who
-can reach this server is whoever is running it on their own machine.
+Discord (guild-admin gated) -- gated the same way here (ADMIN_USER_ID only)
+now that real multi-user accounts exist (core/auth.py); the original
+"ungated, only person who can reach this server" reasoning no longer holds
+once more than one person can sign in. See also WebUI/admin.html, which
+surfaces these same actions as buttons instead of typed commands.
 
-A command handler normally returns a plain str reply. cmd_imagine and
-cmd_imagine_anime are the exception -- they return {"text": ...,
-"image": "/images/<file>"} instead, so webui_server.py's dispatch accepts
-either shape rather than every handler needing to conform to a richer
-contract it doesn't use. Both share _run_imagine(), which just picks the
-backend ("flux" or "anima") passed to core.imagegen.enqueue_generate_image().
-
-/imagine and /imagine_anime each block the whole request until their image
-is done (or fails) instead of streaming live progress edits the way
-Discord's versions do -- there's no progress channel back to the browser
-here, just one request/response. Given Modal's containers scale to zero
-after 5s idle (see modal_imagegen/README.md and modal_flux/README.md), a
-cold start can make this take 30-90s+; the chat's "thinking" indicator is
-the only feedback for that whole span.
+A command handler normally returns a plain str reply -- except /imagine and
+/imagine_anime, which are NOT in COMMANDS below. Unlike every other command,
+they need to keep editing their own chat_store row as generation progresses
+(a live progress bar, mirroring Discord's message-edit version), which means
+they need chat_store and event-loop access this module's handlers don't
+have (a plain sync function returning one str/dict). So webui_server.py's
+chat() intercepts those two command names directly, before the COMMANDS
+dispatch below ever sees them -- see _run_imagine_command() there.
+parse_imagine_args() below is the one piece of that still worth keeping as a
+pure function here: it's just text parsing, no orchestration.
 """
 
 import hashlib
-import os
 import random
+import re
 import secrets
 
 import httpx
 
 from core import ai, llm
-from core.imagegen import enqueue_generate_image
+from core.config import ADMIN_USER_ID
 from core.llm import DEFAULT_PROVIDER_CHAIN
 from core.memory import load_memory, save_memory
+
+
+def _require_admin(req) -> str | None:
+    """Returns an error string if req isn't the admin account, else None --
+    shared by the handlers below that are admin-only now that this server
+    has real multi-user accounts."""
+    if req.user_id != ADMIN_USER_ID:
+        return "you're not an administrator."
+    return None
 
 # ── misc / utility ──────────────────────────────────────────────────────────
 
@@ -77,8 +86,10 @@ def cmd_help(args: list[str], raw: str, req) -> str:
         "/ship <name1> <name2> -- compatibility rating",
         "/random number|coin|die|choice|word <...> -- random stuff",
         "/memory wipe|wipe-all|edit <notes>|view -- manage what the bot remembers about you",
-        "/imagine <prompt> -- generate an image with FLUX.1-schnell (can take 30-90s+ on a cold start)",
-        "/imagine_anime <prompt> -- generate an image with Filigree-Anima (same cold-start caveat)",
+        "/imagine <prompt> [--width N] [--height N] [--steps N] [--cfg N] [--seed N] [--negative \"text\"]"
+        " -- generate an image with FLUX.1-schnell (can take 30-90s+ on a cold start)",
+        "/imagine_anime <prompt> [--width N] [--height N] [--steps N] [--cfg N] [--seed N] [--negative \"text\"]"
+        " -- generate an image with Filigree-Anima (same cold-start caveat)",
     ]
     return "\n".join(lines)
 
@@ -97,6 +108,8 @@ def cmd_mood(args: list[str], raw: str, req) -> str:
 
 
 def cmd_change_mood(args: list[str], raw: str, req) -> str:
+    if (err := _require_admin(req)) is not None:
+        return err
     mood = raw.strip()
     if not mood:
         return "usage: /change_mood <mood>"
@@ -105,6 +118,8 @@ def cmd_change_mood(args: list[str], raw: str, req) -> str:
 
 
 def cmd_ai_provider(args: list[str], raw: str, req) -> str:
+    if (err := _require_admin(req)) is not None:
+        return err
     choices = ("auto",) + DEFAULT_PROVIDER_CHAIN
     value = args[0].lower() if args else ""
     if not value:
@@ -237,6 +252,8 @@ def cmd_memory(args: list[str], raw: str, req) -> str:
     memory = load_memory()
 
     if sub == "wipe-all":
+        if (err := _require_admin(req)) is not None:
+            return err
         save_memory({})
         return "All memory wiped."
 
@@ -265,48 +282,55 @@ def cmd_memory(args: list[str], raw: str, req) -> str:
     return f"unknown /memory subcommand '{sub}' -- try /help"
 
 
-# ── /imagine (flux), /imagine_anime (anima) ────────────────────────────────
+# ── /imagine (flux), /imagine_anime (anima) -- parsing only; the actual
+# generation + progress streaming lives in webui_server.py's
+# _run_imagine_command() (see the module docstring for why) ────────────────
 
-def _run_imagine(prompt: str, usage: str, model: str) -> str | dict:
-    """Shared by cmd_imagine (flux) and cmd_imagine_anime (anima) -- only the
-    backend differs; queueing/polling/response-shape is identical."""
-    if not prompt:
-        return usage
-
-    # enqueue_generate_image() itself is non-blocking (hands the job to that
-    # backend's own shared worker thread and returns immediately) -- the
-    # blocking part is this while loop draining update_queue, which is fine
-    # here since the caller (webui_server.py) already runs this whole
-    # function via asyncio.to_thread, same as get_ai_response().
-    update_queue, position = enqueue_generate_image(prompt, model=model)
-    filepath = None
-    error = None
-    while True:
-        update = update_queue.get()
-        if update is None:
-            break
-        if update["type"] == "done":
-            filepath = update["path"]
-        elif update["type"] == "error":
-            error = update["message"]
-        # "progress" updates are dropped -- no channel back to the browser to
-        # stream them through (see module docstring).
-
-    if filepath and os.path.exists(filepath):
-        # Unlike Discord's /imagine (services the file to Discord's CDN then
-        # deletes its local copy), this server IS the host the browser loads
-        # the image from, so the file has to stay on disk -- never cleaned up
-        # here. data/images/ grows unbounded; not addressed, wasn't asked for.
-        return {"text": prompt, "image": f"/images/{os.path.basename(filepath)}"}
-    return f"couldn't generate that image, sorry.{f' ({error})' if error else ''}"
+# flag name -> (generate_image() kwarg, value type). Kept in one place so
+# parse_imagine_args()'s error message and its casting loop can't drift out
+# of sync with each other.
+_IMAGINE_FLAGS = {
+    "negative": ("negative_prompt", str),
+    "width": ("width", int),
+    "height": ("height", int),
+    "steps": ("steps", int),
+    "cfg": ("cfg", float),
+    "seed": ("seed", int),
+}
+# --flag "quoted value with spaces"  |  --flag bareword
+_IMAGINE_FLAG_RE = re.compile(r'--(\w+)\s+"([^"]*)"|--(\w+)\s+(\S+)')
 
 
-def cmd_imagine(args: list[str], raw: str, req) -> str | dict:
-    return _run_imagine(raw.strip(), "usage: /imagine <prompt>", "flux")
+def parse_imagine_args(raw: str) -> tuple[str, dict, str | None]:
+    """Pulls "--flag value" pairs out of /imagine's raw argument text
+    (value may be double-quoted to include spaces, e.g. --negative "extra
+    limbs, blurry"), leaving whatever's left as the prompt. Returns
+    (prompt, kwargs, error): kwargs is ready to pass straight to
+    core.imagegen.generate_image()/enqueue_generate_image() as **kwargs, and
+    is only meaningful when error is None -- an unrecognized flag or a value
+    that won't cast to the right type is reported as error rather than
+    silently dropped or left to crash generate_image() downstream."""
+    raw_flags: dict[str, str] = {}
 
+    def _collect(m: re.Match) -> str:
+        name = m.group(1) or m.group(3)
+        value = m.group(2) if m.group(1) is not None else m.group(4)
+        raw_flags[name] = value
+        return " "
 
-def cmd_imagine_anime(args: list[str], raw: str, req) -> str | dict:
-    return _run_imagine(raw.strip(), "usage: /imagine_anime <prompt>", "anima")
+    prompt = re.sub(r"\s+", " ", _IMAGINE_FLAG_RE.sub(_collect, raw)).strip()
+
+    kwargs: dict = {}
+    for name, value in raw_flags.items():
+        if name not in _IMAGINE_FLAGS:
+            return prompt, {}, f"unknown flag --{name}. try: {', '.join('--' + f for f in _IMAGINE_FLAGS)}"
+        dest, cast = _IMAGINE_FLAGS[name]
+        try:
+            kwargs[dest] = cast(value)
+        except ValueError:
+            article = "an" if cast.__name__[0] in "aeiou" else "a"
+            return prompt, {}, f"--{name} must be {article} {cast.__name__}, got '{value}'"
+    return prompt, kwargs, None
 
 
 COMMANDS = {
@@ -323,6 +347,7 @@ COMMANDS = {
     "ship": cmd_ship,
     "random": cmd_random,
     "memory": cmd_memory,
-    "imagine": cmd_imagine,
-    "imagine_anime": cmd_imagine_anime,
+    # "imagine"/"imagine_anime" are deliberately NOT here -- see the module
+    # docstring; webui_server.py's chat() intercepts those two names before
+    # this dict is ever consulted.
 }

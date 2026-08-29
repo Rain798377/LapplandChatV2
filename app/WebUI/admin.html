@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Lappland — Admin</title>
+<link rel="stylesheet" href="./nocturne.css" />
+<link rel="stylesheet" href="./admin.css" />
+</head>
+<body>
+<div id="app" style="display:none;min-height:100vh;">
+
+  <nav class="nav" style="border-bottom:1px solid var(--color-divider);padding:14px 24px;">
+    <span class="nav-brand">Lappland <span style="color:var(--color-accent);">/ admin</span></span>
+    <a href="./">&larr; back to chat</a>
+    <a href="#" id="logoutLink">Sign out</a>
+  </nav>
+
+  <main style="max-width:920px;margin:0 auto;padding:28px 24px 60px;display:flex;flex-direction:column;gap:28px;">
+
+    <div id="errorBanner" class="elev-sm" style="display:none;font-size:13px;padding:10px 14px;border-radius:8px;color:oklch(0.72 0.15 25);background:color-mix(in srgb, oklch(0.6 0.18 25) 14%, transparent);border:1px solid color-mix(in srgb, oklch(0.6 0.18 25) 40%, transparent);"></div>
+
+    <section style="display:flex;flex-direction:column;gap:12px;">
+      <h6 style="color:var(--color-accent);">Bot profile</h6>
+      <div class="card elev-sm" style="gap:16px;">
+        <div style="display:flex;align-items:center;gap:16px;">
+          <div id="botAvatarPreview"></div>
+          <div style="display:flex;flex-direction:column;gap:7px;flex:1;min-width:0;">
+            <div style="display:flex;gap:8px;">
+              <button id="pickBotPhotoBtn" class="btn btn-secondary" style="font-size:12.5px;">Upload photo</button>
+              <button id="clearBotPhotoBtn" class="btn btn-ghost" style="font-size:12.5px;color:color-mix(in srgb, var(--color-text) 65%, transparent);">Remove</button>
+            </div>
+            <div style="font-size:10.5px;color:color-mix(in srgb, var(--color-text) 45%, transparent);">Shown to everyone -- unlike a user's own avatar, this isn't per-browser.</div>
+          </div>
+          <input type="file" accept="image/*" id="botPhotoInput" style="display:none;" />
+        </div>
+
+        <div class="field" style="margin:0;">
+          <span>Banner</span>
+          <div id="botBannerPreview" style="width:100%;height:80px;border-radius:var(--radius-lg);background-color:var(--color-bg);background-size:cover;background-position:center;border:1px solid var(--color-divider);margin-top:6px;margin-bottom:8px;"></div>
+          <div style="display:flex;gap:8px;">
+            <button id="pickBotBannerBtn" class="btn btn-secondary" style="font-size:12.5px;">Upload banner</button>
+            <button id="clearBotBannerBtn" class="btn btn-ghost" style="font-size:12.5px;color:color-mix(in srgb, var(--color-text) 65%, transparent);">Remove</button>
+          </div>
+          <input type="file" accept="image/*" id="botBannerInput" style="display:none;" />
+        </div>
+
+        <label class="field" style="margin:0;">
+          <span>Bio</span>
+          <textarea class="input" id="botBioInput" rows="2" placeholder="A short line shown on the bot's profile card, when someone clicks its name (optional)"></textarea>
+        </label>
+        <button id="botBioBtn" class="btn btn-primary" style="align-self:flex-start;">Save bio</button>
+
+        <label class="field" style="margin:0;">
+          <span>About (details panel)</span>
+          <textarea class="input" id="botAboutInput" rows="4" placeholder="Shown in the chat's right-side About card. Leave blank to use the default (model + fallback chain description)."></textarea>
+        </label>
+        <button id="botAboutBtn" class="btn btn-primary" style="align-self:flex-start;">Save about</button>
+      </div>
+    </section>
+
+    <section style="display:flex;flex-direction:column;gap:12px;">
+      <h6 style="color:var(--color-accent);">Bot status</h6>
+      <div class="card elev-sm" style="gap:16px;">
+        <div id="statusGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;"></div>
+
+        <div class="hr" style="margin:2px 0;"></div>
+
+        <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+          <label class="field" style="flex:1;min-width:180px;margin:0;">
+            <span>Mood</span>
+            <input class="input" id="moodInput" placeholder="e.g. playful" />
+          </label>
+          <button id="moodBtn" class="btn btn-primary">Set mood</button>
+        </div>
+      </div>
+    </section>
+
+    <section style="display:flex;flex-direction:column;gap:12px;">
+      <h6 style="color:var(--color-accent);">LLM provider chain</h6>
+      <div class="card elev-sm" style="padding:0;overflow-x:auto;">
+        <table class="table" style="min-width:520px;">
+          <thead><tr><th>Provider</th><th>State</th><th>Cooldown</th><th></th></tr></thead>
+          <tbody id="providerRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section style="display:flex;flex-direction:column;gap:12px;">
+      <h6 style="color:var(--color-accent);">Channels</h6>
+      <div class="card elev-sm" style="padding:0;overflow-x:auto;">
+        <table class="table" style="min-width:420px;">
+          <thead><tr><th>Channel</th><th>Messages</th><th></th></tr></thead>
+          <tbody id="channelRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section style="display:flex;flex-direction:column;gap:12px;">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;">
+        <h6 style="color:var(--color-accent);margin:0;">Users</h6>
+        <span id="userCount" style="font-size:12px;color:color-mix(in srgb, var(--color-text) 55%, transparent);"></span>
+      </div>
+      <div class="card elev-sm" style="padding:0;overflow-x:auto;">
+        <table class="table" style="min-width:520px;">
+          <thead><tr><th>Username</th><th>Email</th><th>Joined</th><th></th></tr></thead>
+          <tbody id="userRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section style="display:flex;flex-direction:column;gap:12px;">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;">
+        <h6 style="color:var(--color-accent);margin:0;">Bot memory</h6>
+        <button id="wipeAllMemoryBtn" class="btn btn-ghost" style="font-size:12.5px;color:color-mix(in srgb, var(--color-text) 65%, transparent);">Wipe all</button>
+      </div>
+      <div class="card elev-sm" style="padding:0;overflow-x:auto;">
+        <table class="table" style="min-width:560px;">
+          <thead><tr><th>User</th><th>Notes</th><th></th></tr></thead>
+          <tbody id="memoryRows"></tbody>
+        </table>
+      </div>
+      <div id="memoryEmpty" style="display:none;font-size:13px;color:color-mix(in srgb, var(--color-text) 55%, transparent);">Nothing remembered yet.</div>
+    </section>
+
+  </main>
+</div>
+
+<script src="./cropper.js"></script>
+<script src="./admin.js"></script>
+</body>
+</html>
