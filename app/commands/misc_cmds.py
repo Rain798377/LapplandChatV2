@@ -6,7 +6,7 @@ import discord
 from core import ai, llm
 from datetime import datetime
 from discord import app_commands
-from core.config import BOT_OWNER_ID
+from core.config import BOT_OWNER_ID, MOODS
 from core.llm import DEFAULT_PROVIDER_CHAIN
 from core.permissions import is_admin
 from core.quote_image import render_quote
@@ -53,13 +53,31 @@ def setup(tree: app_commands.CommandTree, bot: discord.Client):
     async def check_mood(interaction: discord.Interaction):
         await interaction.response.send_message(f"I'm currently feeling {ai.current_mood}!")
 
-    @tree.command(name="change_mood", description="Change the bot's mood (admin only)")
-    async def change_mood(interaction: discord.Interaction, mood: str):
-        if not is_admin(interaction):
-            await interaction.response.send_message("You're not an administrator.", ephemeral=True)
+    @tree.command(name="change_mood", description="Change the bot's mood (owner only)")
+    @app_commands.describe(
+        mood="Pick a preset mood",
+        custom_mood="Or set a custom mood not in the preset list",
+    )
+    @app_commands.choices(mood=[
+        app_commands.Choice(name=m.capitalize(), value=m) for m in MOODS
+    ])
+    async def change_mood(
+        interaction: discord.Interaction,
+        mood: app_commands.Choice[str] = None,
+        custom_mood: str = None,
+    ):
+        if interaction.user.id != BOT_OWNER_ID:
+            await interaction.response.send_message("You're not the owner.", ephemeral=True)
             return
-        ai.current_mood = mood
-        await interaction.response.send_message(f"Mood changed to {mood}!")
+        if custom_mood:
+            new_mood = custom_mood
+        elif mood is not None:
+            new_mood = mood.value
+        else:
+            await interaction.response.send_message("Pick a mood or provide a custom_mood.", ephemeral=True)
+            return
+        ai.current_mood = new_mood
+        await interaction.response.send_message(f"Mood changed to {new_mood}!")
 
     @tree.command(name="ai-provider", description="Force the AI onto one provider, or back to auto fallback (admin only)")
     @app_commands.describe(provider="Which provider to force, or auto for normal fallback behavior")
