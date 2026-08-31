@@ -21,6 +21,7 @@ from core.config import (
     FILE_EXPIRY_SECONDS,
     NORMALIZE_AUDIO,
     SPOTIFY_PLAYLIST_MAX_SONGS,
+    YTDLP_USER_AGENT,
 )
 from services.downloader.video_fix import _probe, _needs_remux, _remux_fix, _fix_video_pts, _trim_to_audio, _compress_to_target, _normalize_audio, _is_corrupt, _probe_open_gop_hevc, _fix_open_gop_hevc
 from services.spotify.audio import search_and_download_audio
@@ -52,6 +53,7 @@ def get_audio_opts(outtmpl: str) -> dict:
         "quiet": True,
         "no_warnings": True,
         "format": "bestaudio/best",
+        "http_headers": {"User-Agent": YTDLP_USER_AGENT},
         "postprocessors": [{
             "key": "FFmpegExtractAudio",
             "preferredcodec": "mp3",
@@ -67,6 +69,7 @@ def get_video_opts(outtmpl: str, height: int) -> dict:
         "no_warnings": True,
         "noplaylist": True,
         "ignoreerrors": False,
+        "http_headers": {"User-Agent": YTDLP_USER_AGENT},
         "format": (
             f"bestvideo[ext=mp4][height<={height}]+bestaudio[ext=m4a]"
             f"/bestvideo[height<={height}]+bestaudio[ext=m4a]"

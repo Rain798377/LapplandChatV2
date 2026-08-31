@@ -124,6 +124,10 @@ MAX_MEMORY_TOKENS     = 4000
 # Downloader config
 MAX_FILE_SIZE_MB      = 25
 NORMALIZE_AUDIO       = False
+# yt-dlp's default python-requests-style UA gets blocked by TikTok's backend
+# (started rejecting/breaking extraction on it) -- spoof a real browser UA so
+# TikTok (and anything else picky about it) keeps working.
+YTDLP_USER_AGENT      = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 
 # GPU worker config -- offloads ffmpeg encodes to a NVENC-capable machine
 # (e.g. a laptop) over HTTP; falls back to local CPU encoding when unset,
