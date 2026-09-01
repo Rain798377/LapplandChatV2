@@ -5,6 +5,7 @@ import json
 import glob
 import shutil
 import asyncio
+import hashlib
 import secrets
 import tempfile
 import subprocess
@@ -156,25 +157,37 @@ def _is_spotify_playlist_url(url: str) -> bool:
 # ── Download command helpers ───────────────────────────────────────────────────
 
 def copy_to_file_server(src: str, preferred_name: str = "") -> str | None:
+    tmp_dest = None
     try:
         os.makedirs(FILE_SERVER_PATH, exist_ok=True)
         ext = os.path.splitext(src)[1]
 
-        # Always use a random token for the URL/disk path
-        token = secrets.token_hex(32)
-        hashed_name = token + ext
-        dest = os.path.join(FILE_SERVER_PATH, hashed_name)
+        # Process into a scratch file first -- the served filename is a sha256
+        # hash of the actual served bytes, so it can only be computed after
+        # any remux below.
+        tmp_dest = os.path.join(FILE_SERVER_PATH, f".tmp_{secrets.token_hex(16)}{ext}")
 
         result = subprocess.run([
             "ffmpeg", "-y", "-i", src,
             "-c", "copy",
             "-movflags", "+faststart",
-            dest,
+            tmp_dest,
         ], capture_output=True, timeout=120)
-        if result.returncode != 0 or not os.path.exists(dest):
-            shutil.copy2(src, dest)
+        if result.returncode != 0 or not os.path.exists(tmp_dest):
+            shutil.copy2(src, tmp_dest)
 
-        # Write sidecar with the display name nginx will use for Content-Disposition
+        digest = hashlib.sha256()
+        with open(tmp_dest, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                digest.update(chunk)
+        hashed_name = digest.hexdigest() + ext
+        dest = os.path.join(FILE_SERVER_PATH, hashed_name)
+        os.replace(tmp_dest, dest)
+        tmp_dest = None
+
+        # Write sidecar with the display name nginx will use for Content-Disposition,
+        # so a downloader gets back the name the user gave it in the /download command
+        # rather than the hash.
         if preferred_name:
             safe = re.sub(r'[\\/:*?"<>|]', "_", preferred_name).strip(" .")
             display = safe + ext if safe else hashed_name
@@ -187,9 +200,15 @@ def copy_to_file_server(src: str, preferred_name: str = "") -> str | None:
 
         asyncio.create_task(_delete_after(dest, FILE_EXPIRY_SECONDS))
         asyncio.create_task(_delete_after(sidecar, FILE_EXPIRY_SECONDS))  # clean up sidecar too
-        return f"{FILE_SERVER_BASE_URL}/downloads/{hashed_name}"
+        return f"{FILE_SERVER_BASE_URL}/{hashed_name}"
     except Exception:
         return None
+    finally:
+        if tmp_dest and os.path.exists(tmp_dest):
+            try:
+                os.remove(tmp_dest)
+            except Exception:
+                pass
 
 
 async def _delete_after(filepath: str, delay: float):
