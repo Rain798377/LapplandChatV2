@@ -28,3 +28,15 @@ services:
     restart: unless-stopped
     volumes:
       - ./intent_server:/app
+
+  ytembed:
+    build: ./ytembed_server
+    container_name: lappland-ytembed
+    restart: unless-stopped
+    environment:
+      VIDEO_EMBED_DOMAIN: REPLACE_WITH_YOUR_SUBDOMAIN
+    ports:
+      - "8804:8804"
+    volumes:
+      - ./ytembed_server:/app
+      - ./data/ytembed_cache:/app/cache

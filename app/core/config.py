@@ -129,6 +129,17 @@ NORMALIZE_AUDIO       = False
 # TikTok (and anything else picky about it) keeps working.
 YTDLP_USER_AGENT      = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 
+# Video-embed proxy config -- fxtwitter-style link-rewrite website for
+# YouTube (see ytembed_server/, a standalone service, not part of this
+# package). Public subdomain it's deployed at, so a rewritten link like
+# "<VIDEO_EMBED_DOMAIN>/watch?v=..." resolves there instead of youtube.com.
+# Not read anywhere in app/ yet -- ytembed_server/server.py has its own copy
+# of this same env var (see its VIDEO_EMBED_DOMAIN in docker-compose.yml),
+# since that folder stays self-contained the same way gpu_worker/
+# intent_server do. Keep the two in sync by hand until/unless the bot itself
+# needs to know this value (e.g. to auto-rewrite links in messages).
+VIDEO_EMBED_DOMAIN = os.environ.get("VIDEO_EMBED_DOMAIN", "")
+
 # GPU worker config -- offloads ffmpeg encodes to a NVENC-capable machine
 # (e.g. a laptop) over HTTP; falls back to local CPU encoding when unset,
 # unreachable, or the job fails. See gpu_worker/README.md for the server side.

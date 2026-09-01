@@ -19,3 +19,4 @@ input.mp4
 app/modal_imagegen/redeploy.ps1
 /app/data
 .env-webui
+/data/ytembed_cache
