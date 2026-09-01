@@ -16,9 +16,14 @@ package in the `app/` sense -- this runs on a different machine entirely.
 5. Set power options so the machine doesn't sleep while plugged in (Settings
    > System > Power > Screen and sleep), otherwise the NAS just can't reach it.
 6. Register it to auto-start via Task Scheduler so it's always listening
-   without logging in and starting it by hand:
+   without logging in and starting it by hand. Point `-Execute` at the venv's
+   `python.exe` directly rather than a bare `"python.exe"` -- the task runs
+   under a non-interactive S4U logon with no venv activation, so a bare
+   `python.exe` resolves via PATH to whatever global install happens to come
+   first, which likely doesn't have `gpu_worker/requirements.txt` installed
+   even if your interactive shell does:
    ```powershell
-   $action  = New-ScheduledTaskAction -Execute "python.exe" -Argument "D:\LapplandChatV2\gpu_worker\server.py" -WorkingDirectory "D:\LapplandChatV2\gpu_worker"
+   $action  = New-ScheduledTaskAction -Execute "D:\LapplandChatV2\.venv\Scripts\python.exe" -Argument "D:\LapplandChatV2\gpu_worker\server.py" -WorkingDirectory "D:\LapplandChatV2\gpu_worker"
    $trigger = New-ScheduledTaskTrigger -AtStartup
    $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U -RunLevel Highest
    Register-ScheduledTask -TaskName "gpu_worker" -Action $action -Trigger $trigger -Principal $principal
@@ -28,6 +33,9 @@ package in the `app/` sense -- this runs on a different machine entirely.
    ```powershell
    [System.Environment]::SetEnvironmentVariable("GPU_WORKER_API_KEY", "<your-key>", "Machine")
    ```
+   A `reregister.ps1` script in this directory automates all of the above
+   (firewall rule, Machine-scope key, task re-registration pointed at the
+   venv python) and self-elevates via UAC -- just run it directly.
 7. On the NAS side, set `GPU_WORKER_URL=http://<laptop-lan-ip>:8802` and
    `GPU_WORKER_API_KEY=<same-key>` in `.env`.
 
