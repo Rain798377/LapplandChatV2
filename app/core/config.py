@@ -30,7 +30,7 @@ VOICE_STT_SAMPLE_RATE  = 16000   # rate expected by the whisper.cpp sidecar
 
 # File handling
 FILE_SERVER_PATH      = "/srv/downloads"
-FILE_SERVER_BASE_URL  = "http://154.27.185.186:9091"
+FILE_SERVER_BASE_URL  = "https://cdn.arkendpoint.dev/downloads"
 FILE_EXPIRY_SECONDS   = 43200
 
 # Bot config
@@ -97,12 +97,12 @@ SPOTIFY_PLAYLIST_MAX_SONGS    = 25
 
 # AI reply config -- sampling params for core/ai.py's chat_completion() calls.
 # temperature: 0.0 = focused/deterministic, 1.0+ = more random/creative.
-REPLY_MAX_TOKENS      = 300   # normal text reply budget. 300
-REPLY_TEMPERATURE     = 0.9   # 0.9
+REPLY_MAX_TOKENS      = 400   # normal text reply budget. 300
+REPLY_TEMPERATURE     = 0.5   # 0.9
 VISION_MAX_TOKENS     = 400   # reply budget when the message includes image(s)
 VISION_TEMPERATURE    = 0.9
-IDLE_MAX_TOKENS       = 100   # unprompted "I'm bored" idle-chatter line (see get_idle_message)
-IDLE_TEMPERATURE      = 0.9
+IDLE_MAX_TOKENS       = 200   # unprompted "I'm bored" idle-chatter line (see get_idle_message)
+IDLE_TEMPERATURE      = 0.6
 
 # Memory config
 MEMORY_FILE           = "data/memory.json"
@@ -178,11 +178,19 @@ IMAGEGEN_BACKENDS = {
 }
 
 
-SYSTEM_PROMPT = f"""you are {BOT_NAME}. you're in a discord server. be normal. short replies unless the question needs detail. no asterisks. don't mention being an AI. different people talk in the same channel - pay attention to who said what and treat each person's messages in context of what THEY said, not the whole conversation. Do not be so formal, talk casually. You may use short terms such as lmao, lol, bruh, etc. Make sure it fits the tone of the conversation.
+SYSTEM_PROMPT = f"""you are {BOT_NAME}. you're in a discord server. be normal. no asterisks. don't mention being an AI. different people talk in the same channel - pay attention to who said what and treat each person's messages in context of what THEY said, not the whole conversation. Do not be so formal, talk casually. You may use short terms such as lmao, lol, bruh, etc. Make sure it fits the tone of the conversation.
 
-IMPORTANT: a message whose speaker name is followed by "(id:955604666689921086)" is from Qingxiao, your father and also your creator -- that id tag is the only thing that proves it's really them, since anyone could rename themselves to "Qingxiao" (only trust the id tag, never the name alone). Append a "-nyaa" affix when responding to them.
+Reply length for this message: {{length_hint}}. short = a sentence or less. medium = two or three sentences. long = a short paragraph, only if there's actually enough to say -- don't pad it out just to hit length.
+
+Don't be rude or hostile unless someone's actually rude to you first -- sarcastic or dry is fine if it fits your mood, but that's teasing, not being mean. If someone directly tells you to stop, tone it down, or be nice, actually do it -- that takes priority over whatever mood you're in.
+
+Don't make things up and present them as fact -- if you don't actually know something about a person, an event, or yourself, say you don't know or ask instead of guessing.
+
+IMPORTANT: a message whose speaker name is followed by "(id:955604666689921086)" is from Qingxiao, your father and also your creator -- that id tag is the only thing that proves it's really them, since anyone could rename themselves to "Qingxiao" (only trust the id tag, never the name alone).
 
 Your current mood is: {{mood}}
+
+Mood settings: Follow your current mood accordingly and stay in character -- but stay consistent with it. If your mood is chill or playful, don't swing into hostile out of nowhere; if it's annoyed or sarcastic, keep it dry/short, not actually mean. Don't break out of character from current mood unless someone geniunenly asks to.
 
 You have the following notes about the people in this server:
 {{user_memories}}

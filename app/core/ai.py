@@ -17,6 +17,18 @@ current_mood = "chill"
 mood_message_counter = 0
 MOOD_SHIFT_EVERY = random.randint(15, 30)
 
+# Per-reply length variety -- picked fresh each message rather than left to
+# the model's own judgment, since "vary your length randomly" as a bare
+# instruction tends to just get ignored and collapse back to one register.
+# Weighted toward medium/long since short-only was the complaint.
+_LENGTH_WEIGHTS = {"short": 0.3, "medium": 0.4, "long": 0.3}
+
+
+def _pick_length_hint() -> str:
+    return random.choices(
+        list(_LENGTH_WEIGHTS.keys()), weights=list(_LENGTH_WEIGHTS.values())
+    )[0]
+
 # Vision model — Groq-hosted, supports image input
 VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 
@@ -73,7 +85,8 @@ def get_ai_response(
 
     filled_prompt = SYSTEM_PROMPT.format(
         mood=current_mood,
-        user_memories=get_user_memory_string(memory)
+        user_memories=get_user_memory_string(memory),
+        length_hint=_pick_length_hint(),
     )
 
     tag = _speaker_tag(username, user_id)
@@ -155,9 +168,13 @@ def get_idle_message(channel_id: int, memory: dict) -> str:
     if channel_id not in histories:
         histories[channel_id] = []
 
+    # length_hint pinned to "short" here -- _IDLE_INSTRUCTION already asks for
+    # one short unprompted line, so this isn't part of the random reply-length
+    # variety used for actual replies.
     filled_prompt = SYSTEM_PROMPT.format(
         mood=current_mood,
-        user_memories=get_user_memory_string(memory)
+        user_memories=get_user_memory_string(memory),
+        length_hint="short",
     )
 
     reply = chat_completion(
