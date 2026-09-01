@@ -1,7 +1,7 @@
 import os
 
 # Model config
-MODEL                 = "qwen/qwen3.6-27b"
+MODEL                 = "qwen/qwen3.8-27b"
 MOODS                 = ["chill", "playful", "sarcastic", "tired", "hyper", "annoyed"]
 GREETINGS             = {"hello", "hi", "hey", "sup", "yo", "hiya", "heya", "howdy", "morning", "evening", "wsp"}
 

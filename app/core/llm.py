@@ -128,13 +128,13 @@ _PROVIDER_LOG_COLOR = {
     "openrouter": CYAN,
 }
 
-# qwen/qwen3.6-27b (MODEL) is a reasoning model that thinks out loud before
+# qwen/qwen3.8-27b (MODEL) is a reasoning model that thinks out loud before
 # answering, which ate into max_tokens and could exhaust the whole budget on
 # hidden reasoning before writing a visible reply. reasoning_effort="none" is
-# a Qwen-3.6-27b-specific param that turns reasoning off entirely -- other
+# a Qwen-3.8-27b-specific param that turns reasoning off entirely -- other
 # Groq models (e.g. VISION_MODEL) don't support it, so it's only sent for
 # this model rather than on every call.
-_REASONING_EFFORT_MODELS = {"qwen/qwen3.6-27b"}
+_REASONING_EFFORT_MODELS = {"qwen/qwen3.8-27b"}
 
 
 class _RetryableFailure(Exception):
